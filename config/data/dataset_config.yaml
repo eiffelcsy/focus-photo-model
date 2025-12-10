@@ -1,0 +1,11 @@
+# Minimal Dataset Configuration
+
+# AVA Dataset (handled separately)
+ava_dataset:
+  local_path: "data/ava"  # Local path to AVA dataset
+  score_range: [1, 10]    # AVA aesthetic score range
+  
+# Image Processing
+image_processing:
+  supported_formats: [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]
+  max_size: [512, 512]    # Maximum image dimensions for processing
