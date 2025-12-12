@@ -179,18 +179,18 @@ def main():
         description="Generate pseudolabels for photography quality assessment using SmolVLM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Process a directory of images
-  python scripts/generate_pseudolabels.py --input /path/to/images --output results/
+            Examples:
+            # Process a directory of images
+            python scripts/generate_pseudolabels.py --input /path/to/images --output results/
 
-  # Process AVA dataset train split with 1000 samples
-  python scripts/generate_pseudolabels.py --ava-split train --num-samples 1000 --output results/
+            # Process AVA dataset train split with 1000 samples
+            python scripts/generate_pseudolabels.py --ava-split train --num-samples 1000 --output results/
 
-  # Use custom configuration
-  python scripts/generate_pseudolabels.py --config config/training/pseudolabel_config.yaml --input images/ --output results/
+            # Use custom configuration
+            python scripts/generate_pseudolabels.py --config config/training/pseudolabel_config.yaml --input images/ --output results/
 
-  # Process specific image files
-  python scripts/generate_pseudolabels.py --input image1.jpg image2.jpg --output results/
+            # Process specific image files
+            python scripts/generate_pseudolabels.py --input image1.jpg image2.jpg --output results/
         """
     )
     

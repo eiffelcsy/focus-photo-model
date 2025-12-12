@@ -8,13 +8,5 @@ device: "cuda"  # Device selection: auto, cuda, cpu, mps
 max_new_tokens: 200  # Maximum tokens to generate per assessment
 temperature: 0.3  # Low temperature for consistent scoring
 
-# Assessment Criteria (5 criteria as specified)
-criteria:
-  - impact      # Emotional response and memorability upon first viewing
-  - style       # Artistic expression and creative vision  
-  - composition # Visual arrangement and balance of elements
-  - lighting    # Quality and effectiveness of illumination
-  - color_balance # Harmony and effectiveness of color relationships
-
 # Processing Options
 recursive_search: true  # Search subdirectories when processing directories
