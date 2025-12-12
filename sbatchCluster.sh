@@ -34,4 +34,4 @@ source ~/myenv/bin/activate
 # pip3 install numpy
 
 # Submit your job to the cluster
-srun --gres=gpu:1 python /path/to/your/python/script.py
+srun --gres=gpu:1 python scripts/generate_pseudolabels.py --input /common/scratch/users/e/eiffelchong.2023/ava/images/ --output results/
