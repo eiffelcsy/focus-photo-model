@@ -14,10 +14,106 @@ from PIL import Image
 from transformers import AutoProcessor, AutoModelForVision2Seq, AutoTokenizer
 from tqdm import tqdm
 import re
+import csv
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def load_ava_dataset(
+    csv_path: str,
+    images_dir: str,
+    max_samples: Optional[int] = None,
+    check_image_exists: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Load AVA dataset from CSV file and map to image paths.
+    
+    The CSV file contains vote distributions (vote_1 to vote_10) for each image.
+    The mean aesthetic score is calculated as: sum(vote_i * i) for i in 1..10
+    
+    Args:
+        csv_path: Path to the ground_truth_dataset.csv file
+        images_dir: Directory containing the AVA images
+        max_samples: Maximum number of samples to load (None for all)
+        check_image_exists: Whether to verify that image files exist before including them
+        
+    Returns:
+        List of dicts with 'image_path' and 'ava_score' keys
+    """
+    csv_path = Path(csv_path)
+    images_dir = Path(images_dir)
+    
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    
+    if not images_dir.exists():
+        raise FileNotFoundError(f"Images directory not found: {images_dir}")
+    
+    image_data = []
+    skipped_missing = 0
+    skipped_invalid = 0
+    
+    logger.info(f"Loading AVA dataset from {csv_path}")
+    logger.info(f"Images directory: {images_dir}")
+    
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            
+            for row_idx, row in enumerate(tqdm(reader, desc="Loading AVA dataset"), start=1):
+                if max_samples and len(image_data) >= max_samples:
+                    break
+                
+                try:
+                    # Get image number
+                    image_num = row['image_num'].strip()
+                    
+                    # Calculate mean AVA score from vote distribution
+                    # Score = sum(vote_i * i) for i in 1..10
+                    mean_score = 0.0
+                    for i in range(1, 11):
+                        vote_key = f'vote_{i}'
+                        if vote_key in row:
+                            try:
+                                vote_proportion = float(row[vote_key])
+                                mean_score += vote_proportion * i
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    # Construct image path
+                    image_path = images_dir / f"{image_num}.jpg"
+                    
+                    # Check if image exists if requested
+                    if check_image_exists and not image_path.exists():
+                        skipped_missing += 1
+                        if skipped_missing <= 10:  # Log first 10 missing images
+                            logger.debug(f"Image not found: {image_path}")
+                        continue
+                    
+                    image_data.append({
+                        'image_path': str(image_path),
+                        'ava_score': mean_score
+                    })
+                    
+                except Exception as e:
+                    skipped_invalid += 1
+                    if skipped_invalid <= 10:  # Log first 10 invalid rows
+                        logger.warning(f"Error processing row {row_idx}: {e}")
+                    continue
+        
+        logger.info(f"Loaded {len(image_data)} images from AVA dataset")
+        if skipped_missing > 0:
+            logger.warning(f"Skipped {skipped_missing} images that were not found")
+        if skipped_invalid > 0:
+            logger.warning(f"Skipped {skipped_invalid} rows with invalid data")
+        
+        return image_data
+        
+    except Exception as e:
+        logger.error(f"Error loading AVA dataset: {e}")
+        raise
 
 
 class PhotographyQualityDataset:

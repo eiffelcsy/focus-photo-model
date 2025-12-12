@@ -24,7 +24,7 @@ from datetime import datetime
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from training.pseudolabel_generator import GemmaPseudolabelGenerator
+from training.pseudolabel_generator import GemmaPseudolabelGenerator, load_ava_dataset
 
 # Set up logging
 logging.basicConfig(
@@ -157,8 +157,9 @@ def save_run_metadata(output_dir: Path, args: argparse.Namespace, config: dict, 
             'config': config
         },
         'input_info': {
-            'source_type': 'ava_dataset' if args.ava_split else 'local_files',
-            'ava_split': args.ava_split,
+            'source_type': 'ava_dataset' if args.ava_dataset else 'local_files',
+            'ava_csv': str(args.ava_csv) if args.ava_csv else None,
+            'ava_images_dir': str(args.ava_images_dir) if args.ava_images_dir else None,
             'input_paths': args.input if args.input else [],
             'num_samples': args.num_samples,
             'recursive_search': config.get('recursive_search', True)
@@ -183,8 +184,8 @@ def main():
             # Process a directory of images
             python scripts/generate_pseudolabels.py --input /path/to/images --output results/
 
-            # Process AVA dataset train split with 1000 samples
-            python scripts/generate_pseudolabels.py --ava-split train --num-samples 1000 --output results/
+            # Process AVA dataset with 1000 samples
+            python scripts/generate_pseudolabels.py --ava-dataset --num-samples 1000 --output results/
 
             # Use custom configuration
             python scripts/generate_pseudolabels.py --config config/training/pseudolabel_config.yaml --input images/ --output results/
@@ -202,9 +203,9 @@ def main():
         help='Input image files or directories to process'
     )
     input_group.add_argument(
-        '--ava-split',
-        choices=['train', 'test', 'validation'],
-        help='Use AVA dataset split (train, test, or validation)'
+        '--ava-dataset',
+        action='store_true',
+        help='Load AVA dataset from data folder (uses ground_truth_dataset.csv and images/)'
     )
     
     # Output options
@@ -287,6 +288,22 @@ def main():
     )
     
     parser.add_argument(
+        '--ava-csv',
+        help='Path to AVA ground truth CSV file (default: src/data/ground_truth_dataset.csv)'
+    )
+    
+    parser.add_argument(
+        '--ava-images-dir',
+        help='Path to AVA images directory (default: src/data/images)'
+    )
+    
+    parser.add_argument(
+        '--skip-missing-images',
+        action='store_true',
+        help='Skip images that are not found (default: True when using AVA dataset)'
+    )
+    
+    parser.add_argument(
         '--verbose', '-v',
         action='store_true',
         help='Enable verbose logging'
@@ -338,11 +355,34 @@ def main():
         # Get image data (paths + AVA scores)
         image_data = []
         
-        if args.ava_split:
-            logger.error("AVA dataset loading should be handled separately. Please provide image paths and AVA scores.")
-            return 1
+        if args.ava_dataset:
+            # Load AVA dataset
+            project_root = Path(__file__).parent.parent
+            csv_path = args.ava_csv or (project_root / "src" / "data" / "ground_truth_dataset.csv")
+            images_dir = args.ava_images_dir or (project_root / "src" / "data" / "images")
+            
+            logger.info(f"Loading AVA dataset from CSV: {csv_path}")
+            logger.info(f"Images directory: {images_dir}")
+            
+            try:
+                image_data = load_ava_dataset(
+                    csv_path=str(csv_path),
+                    images_dir=str(images_dir),
+                    max_samples=args.num_samples,
+                    check_image_exists=not args.skip_missing_images
+                )
+            except Exception as e:
+                logger.error(f"Failed to load AVA dataset: {e}")
+                if args.verbose:
+                    import traceback
+                    traceback.print_exc()
+                return 1
         else:
             # Process local files/directories
+            if not args.input:
+                logger.error("Either --input or --ava-dataset must be specified")
+                return 1
+                
             for input_path in args.input:
                 input_path = Path(input_path)
                 
@@ -371,8 +411,8 @@ def main():
                 else:
                     logger.error(f"Input path does not exist: {input_path}")
         
-        # Apply sample limit if specified
-        if args.num_samples and len(image_data) > args.num_samples:
+        # Apply sample limit if specified (only for non-AVA datasets, as AVA loader handles it)
+        if not args.ava_dataset and args.num_samples and len(image_data) > args.num_samples:
             logger.info(f"Limiting to {args.num_samples} samples (from {len(image_data)} total)")
             image_data = image_data[:args.num_samples]
         
