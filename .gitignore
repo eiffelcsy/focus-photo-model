@@ -1,0 +1,9 @@
+src/data/**
+src/results/**
+src/logs/**
+src/models/**
+src/notebooks/**
+src/tests/**
+src/utils/**
+src/wandb/**
+src/wandb/**
