@@ -426,10 +426,20 @@ Respond in JSON format:
                 use_sampling = self.temperature > 0.5
                 
                 # Prepare generation parameters with proper token IDs
+                # For Gemma 3, we need to be careful about pad_token_id
+                # Don't pass pad_token_id - let the model handle it internally
                 generation_kwargs = {
                     'max_new_tokens': self.max_new_tokens,
-                    'pad_token_id': self.pad_token_id,
                 }
+                
+                # Add eos_token_id if available - this is critical for stopping generation
+                if self.eos_token_id is not None:
+                    generation_kwargs['eos_token_id'] = self.eos_token_id
+                    generation_kwargs['pad_token_id'] = self.eos_token_id  # Use EOS as pad to avoid padding issues
+                else:
+                    # Fallback: use pad_token_id if EOS is not available
+                    if self.pad_token_id is not None:
+                        generation_kwargs['pad_token_id'] = self.pad_token_id
                 
                 # Add sampling parameters only if using sampling
                 if use_sampling:
@@ -441,9 +451,8 @@ Respond in JSON format:
                     generation_kwargs['do_sample'] = False
                     logger.debug(f"Using greedy decoding (temperature={self.temperature} is low)")
                 
-                # Add eos_token_id if available
-                if self.eos_token_id is not None:
-                    generation_kwargs['eos_token_id'] = self.eos_token_id
+                # Ensure the model stops generating when it should
+                generation_kwargs['early_stopping'] = True
                 
                 # Prepare model inputs - pass all inputs from processor
                 # The processor should have already formatted everything correctly
@@ -474,11 +483,18 @@ Respond in JSON format:
                     )
                     
                     # Debug: Check what was generated
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"Generated output shape: {outputs.shape}")
-                        logger.debug(f"Output token IDs (first 50): {outputs[0][:50].tolist()}")
-                        if len(outputs[0]) > input_length:
-                            logger.debug(f"New token IDs (first 20): {outputs[0][input_length:input_length+20].tolist()}")
+                    logger.info(f"Generated output shape: {outputs.shape}")
+                    if len(outputs[0]) > input_length:
+                        new_token_ids = outputs[0][input_length:input_length+50].tolist()
+                        logger.info(f"First 50 new token IDs: {new_token_ids}")
+                        # Check if all tokens are pad tokens
+                        unique_tokens = set(new_token_ids)
+                        logger.info(f"Unique token IDs in first 50: {unique_tokens}")
+                        if len(unique_tokens) == 1 and 0 in unique_tokens:
+                            logger.error("All generated tokens are pad tokens (0). Model may not be generating properly.")
+                        elif self.pad_token_id in unique_tokens:
+                            pad_count = new_token_ids.count(self.pad_token_id)
+                            logger.warning(f"Found {pad_count} pad tokens in first 50 generated tokens")
                 except RuntimeError as e:
                     if "CUDA" in str(e) or "cuda" in str(e).lower():
                         logger.error(f"CUDA error during generation for image {image_id}: {e}")
@@ -529,30 +545,43 @@ Respond in JSON format:
                 # Decode only the newly generated tokens
                 new_tokens = outputs[0][input_length:]
                 
+                # Filter out pad tokens and EOS tokens from the end
+                # Pad tokens have ID 0, EOS tokens have ID 1 (based on earlier logs)
+                filtered_tokens = []
+                for token_id in new_tokens:
+                    token_id_val = token_id.item()
+                    # Stop at EOS token
+                    if token_id_val == self.eos_token_id:
+                        break
+                    # Skip pad tokens (ID 0)
+                    if token_id_val != self.pad_token_id:
+                        filtered_tokens.append(token_id)
+                
                 # Log the actual token IDs for debugging
                 logger.debug(f"New token IDs (first 50): {new_tokens[:50].tolist()}")
+                logger.debug(f"Filtered token IDs (first 50): {[t.item() for t in filtered_tokens[:50]]}")
                 
-                # Check if we immediately hit EOS
-                if len(new_tokens) > 0 and new_tokens[0].item() == self.eos_token_id:
-                    logger.warning(f"Model immediately generated EOS token. No content generated.")
+                if len(filtered_tokens) == 0:
+                    logger.warning(f"All generated tokens were pad/EOS tokens. No content generated.")
                     response = ""
                 else:
-                    # Decode the new tokens
+                    # Convert filtered tokens back to tensor for decoding
+                    filtered_tokens_tensor = torch.tensor(filtered_tokens, device=new_tokens.device)
+                    
+                    # Decode the filtered tokens
                     response = self.tokenizer.decode(
-                        new_tokens,
+                        filtered_tokens_tensor,
                         skip_special_tokens=True
                     )
                     
-                    # If response is empty or very short, try decoding without skipping special tokens
-                    if not response.strip() or len(response.strip()) < 10:
-                        logger.warning(f"Response is empty or very short ({len(response)} chars). Trying without skip_special_tokens...")
-                        response_with_special = self.tokenizer.decode(
-                            new_tokens,
+                    # If response is still empty, try without skipping special tokens
+                    if not response.strip():
+                        logger.warning(f"Response is empty after filtering. Trying without skip_special_tokens...")
+                        response = self.tokenizer.decode(
+                            filtered_tokens_tensor,
                             skip_special_tokens=False
                         )
-                        logger.warning(f"Response with special tokens: {response_with_special[:500]}")
-                        # Try to extract meaningful content
-                        response = response_with_special
+                        logger.warning(f"Response with special tokens: {response[:500]}")
                 
                 # Also decode the full output for comparison
                 full_response = self.tokenizer.decode(
