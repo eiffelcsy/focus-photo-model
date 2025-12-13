@@ -335,6 +335,7 @@ Respond in JSON format:
                 return parsed
             else:
                 logger.warning("No JSON found in response")
+                logger.warning(f"Response: {response}")
                 return default_scores
                 
         except json.JSONDecodeError as e:
