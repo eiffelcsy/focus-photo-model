@@ -228,7 +228,7 @@ class GemmaPseudolabelGenerator:
     
     def _create_prompt_template(self) -> str:
         """Create the prompt template for assessment."""
-        return """Analyze this photograph and rate it on these 5 criteria (scale 1-10):
+        return """<image>Analyze this photograph and rate it on these 5 criteria (scale 1-10):
 
 1. IMPACT: Emotional response and memorability upon first viewing
 2. STYLE: Artistic expression and creative vision
