@@ -231,21 +231,21 @@ def main():
     parser.add_argument(
         '--batch-size', '-b',
         type=int,
-        default=4,
-        help='Batch size for processing (default: 4)'
+        default=None,
+        help='Batch size for processing (default: from config or 4)'
     )
     
     parser.add_argument(
         '--device',
         choices=['auto', 'cuda', 'cpu', 'mps'],
-        default='auto',
-        help='Device to use for inference (default: auto)'
+        default=None,
+        help='Device to use for inference (default: from config or auto)'
     )
     
     parser.add_argument(
         '--model-name',
-        default='HuggingFaceTB/SmolVLM-Instruct',
-        help='HuggingFace model name to use (default: HuggingFaceTB/SmolVLM-Instruct)'
+        default=None,
+        help='HuggingFace model name to use (default: from config)'
     )
     
     # Output format options
@@ -271,15 +271,15 @@ def main():
     parser.add_argument(
         '--temperature',
         type=float,
-        default=0.7,
-        help='Sampling temperature for text generation (default: 0.7)'
+        default=None,
+        help='Sampling temperature for text generation (default: from config or 0.7)'
     )
     
     parser.add_argument(
         '--max-tokens',
         type=int,
-        default=256,
-        help='Maximum tokens to generate per assessment (default: 256)'
+        default=None,
+        help='Maximum tokens to generate per assessment (default: from config or 256)'
     )
     
     parser.add_argument(
@@ -334,18 +334,26 @@ def main():
                 if loaded_config:
                     config.update(loaded_config)
         
-        # Override config with command line arguments (CLI args take precedence)
-        config.update({
-            'model_name': args.model_name,
-            'device': args.device,
-            'batch_size': args.batch_size,
-            'max_new_tokens': args.max_tokens,
-            'temperature': args.temperature,
-            'cache_dir': args.cache_dir,
-            'save_individual': not args.no_individual,
-            'save_summary': not args.no_summary,
-            'recursive_search': not args.no_recursive
-        })
+        # Override config with command line arguments (only if explicitly provided)
+        # CLI args take precedence, but None values mean "use config file value"
+        if args.model_name is not None:
+            config['model_name'] = args.model_name
+        if args.device is not None:
+            config['device'] = args.device
+        if args.batch_size is not None:
+            config['batch_size'] = args.batch_size
+        if args.max_tokens is not None:
+            config['max_new_tokens'] = args.max_tokens
+        if args.temperature is not None:
+            config['temperature'] = args.temperature
+        if args.cache_dir is not None:
+            config['cache_dir'] = args.cache_dir
+        if args.no_individual:
+            config['save_individual'] = False
+        if args.no_summary:
+            config['save_summary'] = False
+        if args.no_recursive:
+            config['recursive_search'] = False
         
         # Validate configuration
         config = validate_config(config)
