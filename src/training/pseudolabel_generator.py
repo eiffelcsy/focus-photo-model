@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForVision2Seq, AutoTokenizer
+from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 import re
 import csv
@@ -198,6 +198,7 @@ class GemmaPseudolabelGenerator:
             logger.info(f"Loading Gemma model: {self.model_name}")
             
             # Load processor and tokenizer
+            # For Gemma 3, the processor handles both text and images
             self.processor = AutoProcessor.from_pretrained(
                 self.model_name,
                 trust_remote_code=True
@@ -208,8 +209,7 @@ class GemmaPseudolabelGenerator:
                 trust_remote_code=True
             )
             
-            # Load model
-            self.model = AutoModelForVision2Seq.from_pretrained(
+            self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 trust_remote_code=True,
                 torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
@@ -228,7 +228,7 @@ class GemmaPseudolabelGenerator:
     
     def _create_prompt_template(self) -> str:
         """Create the prompt template for assessment."""
-        return """<image>Analyze this photograph and rate it on these 5 criteria (scale 1-10):
+        return """Analyze this photograph and rate it on these 5 criteria (scale 1-10):
 
 1. IMPACT: Emotional response and memorability upon first viewing
 2. STYLE: Artistic expression and creative vision
@@ -309,28 +309,56 @@ Respond in JSON format:
             # Create prompt with AVA score
             prompt = self.prompt_template.format(ava_score=ava_score)
             
-            # Prepare inputs - processor expects images as a list
+            # Prepare inputs - Gemma 3 processor handles images and text together
+            # The processor will format the prompt appropriately for the model
             inputs = self.processor(
                 text=prompt,
                 images=[image],
                 return_tensors="pt"
-            ).to(self.device)
+            )
+            
+            # Move inputs to device
+            if hasattr(inputs, 'to'):
+                inputs = inputs.to(self.device)
+            else:
+                # Handle case where inputs is a dict
+                inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                         for k, v in inputs.items()}
             
             # Generate response
             with torch.no_grad():
+                # Get input_ids length for proper decoding
+                input_ids = inputs.get('input_ids')
+                input_length = input_ids.shape[1] if input_ids is not None else 0
+                
+                # Set pad_token_id if not already set
+                pad_token_id = self.tokenizer.eos_token_id
+                if pad_token_id is None:
+                    pad_token_id = self.tokenizer.pad_token_id
+                
                 outputs = self.model.generate(
                     **inputs,
                     max_new_tokens=self.max_new_tokens,
                     temperature=self.temperature,
                     do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id
+                    pad_token_id=pad_token_id
                 )
             
-            # Decode response
-            response = self.tokenizer.decode(
-                outputs[0][inputs['input_ids'].shape[1]:],
-                skip_special_tokens=True
-            )
+            # Decode response - skip the input tokens
+            if input_length > 0 and len(outputs[0]) > input_length:
+                response = self.tokenizer.decode(
+                    outputs[0][input_length:],
+                    skip_special_tokens=True
+                )
+            else:
+                # Fallback: decode entire output (may include prompt)
+                response = self.tokenizer.decode(
+                    outputs[0],
+                    skip_special_tokens=True
+                )
+                # Try to remove the prompt if it's still in the response
+                if prompt in response:
+                    response = response.replace(prompt, "").strip()
             
             # Parse JSON response
             scores = self._parse_json_response(response)
