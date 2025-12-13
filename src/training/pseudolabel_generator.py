@@ -220,6 +220,15 @@ class GemmaPseudolabelGenerator:
                 self.model = self.model.to(self.device)
             
             self.model.eval()
+            
+            # Check if processor has image token information
+            if hasattr(self.processor, 'image_token'):
+                logger.info(f"Processor image token: {self.processor.image_token}")
+            if hasattr(self.processor, 'image_start_token'):
+                logger.info(f"Processor image start token: {self.processor.image_start_token}")
+            if hasattr(self.processor, 'tokenizer') and hasattr(self.processor.tokenizer, 'image_token'):
+                logger.info(f"Tokenizer image token: {self.processor.tokenizer.image_token}")
+            
             logger.info("Model loaded successfully")
             
         except Exception as e:
@@ -228,7 +237,9 @@ class GemmaPseudolabelGenerator:
     
     def _create_prompt_template(self) -> str:
         """Create the prompt template for assessment."""
-        return """<image>Analyze this photograph and rate it on these 5 criteria (scale 1-10):
+        # Gemma 3 uses a specific format with turn markers and image tokens
+        return """<start_of_turn>user
+Analyze this photograph and rate it on these 5 criteria (scale 1-10):
 
 1. IMPACT: Emotional response and memorability upon first viewing
 2. STYLE: Artistic expression and creative vision
@@ -247,7 +258,11 @@ Respond in JSON format:
     "lighting": X.X,
     "color_balance": X.X,
     "reasoning": "brief explanation of scores"
-}}"""
+}}
+<start_of_image>
+<end_of_turn>
+<start_of_turn>model
+"""
     
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
         """Parse JSON response from the model."""
@@ -309,13 +324,28 @@ Respond in JSON format:
             # Create prompt with AVA score
             prompt = self.prompt_template.format(ava_score=ava_score)
             
+            # Debug: Log prompt to verify image token is present
+            if "<start_of_image>" not in prompt and "<image>" not in prompt:
+                logger.warning(f"Prompt for image {image_id} does not contain image token!")
+                logger.debug(f"Prompt preview: {prompt[:200]}...")
+            
             # Prepare inputs - Gemma 3 processor handles images and text together
-            # The processor will format the prompt appropriately for the model
-            inputs = self.processor(
-                text=prompt,
-                images=[image],
-                return_tensors="pt"
-            )
+            # The processor expects the image token in the prompt and matches it with the image
+            # Try with list format (common in transformers)
+            try:
+                inputs = self.processor(
+                    text=prompt,
+                    images=[image],  # List format
+                    return_tensors="pt"
+                )
+            except Exception as e:
+                # If list format fails, try single image
+                logger.debug(f"List format failed, trying single image: {e}")
+                inputs = self.processor(
+                    text=prompt,
+                    images=image,  # Single image format
+                    return_tensors="pt"
+                )
             
             # Move inputs to device
             if hasattr(inputs, 'to'):
