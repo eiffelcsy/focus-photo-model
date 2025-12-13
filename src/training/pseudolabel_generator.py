@@ -274,7 +274,9 @@ class GemmaPseudolabelGenerator:
     def _create_prompt_template(self) -> str:
         """Create the prompt template for assessment."""
         # Gemma 3 uses a specific format with turn markers and image tokens
+        # The image token should be placed where the image appears in the conversation
         return """<start_of_turn>user
+<start_of_image>
 Analyze this photograph and rate it on these 5 criteria (scale 1-10):
 
 1. IMPACT: Emotional response and memorability upon first viewing
@@ -295,7 +297,6 @@ Respond in JSON format:
     "color_balance": X.X,
     "reasoning": "brief explanation of scores"
 }}
-<start_of_image>
 <end_of_turn>
 <start_of_turn>model
 """
@@ -471,6 +472,13 @@ Respond in JSON format:
                         **model_inputs,
                         **generation_kwargs
                     )
+                    
+                    # Debug: Check what was generated
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"Generated output shape: {outputs.shape}")
+                        logger.debug(f"Output token IDs (first 50): {outputs[0][:50].tolist()}")
+                        if len(outputs[0]) > input_length:
+                            logger.debug(f"New token IDs (first 20): {outputs[0][input_length:input_length+20].tolist()}")
                 except RuntimeError as e:
                     if "CUDA" in str(e) or "cuda" in str(e).lower():
                         logger.error(f"CUDA error during generation for image {image_id}: {e}")
@@ -496,20 +504,79 @@ Respond in JSON format:
                     raise
             
             # Decode response - skip the input tokens
-            if input_length > 0 and len(outputs[0]) > input_length:
-                response = self.tokenizer.decode(
-                    outputs[0][input_length:],
-                    skip_special_tokens=True
+            # Note: outputs contains the full sequence including input_ids
+            output_length = len(outputs[0])
+            num_new_tokens = output_length - input_length
+            
+            # Log output info for debugging
+            logger.info(f"Image {image_id}: Input length={input_length}, Output length={output_length}, New tokens={num_new_tokens}")
+            
+            if num_new_tokens <= 0:
+                logger.warning(f"No new tokens generated for image {image_id}. Output length ({output_length}) <= input length ({input_length})")
+                # Decode the full output to see what we got
+                full_response = self.tokenizer.decode(
+                    outputs[0],
+                    skip_special_tokens=False  # Don't skip special tokens to see what's there
                 )
-            else:
-                # Fallback: decode entire output (may include prompt)
+                logger.warning(f"Full decoded output (with special tokens): {full_response[:500]}")
+                # Try again without special tokens
                 response = self.tokenizer.decode(
                     outputs[0],
                     skip_special_tokens=True
                 )
-                # Try to remove the prompt if it's still in the response
-                if prompt in response:
-                    response = response.replace(prompt, "").strip()
+                logger.warning(f"Full decoded output (no special tokens): {response[:500]}")
+            else:
+                # Decode only the newly generated tokens
+                new_tokens = outputs[0][input_length:]
+                
+                # Log the actual token IDs for debugging
+                logger.debug(f"New token IDs (first 50): {new_tokens[:50].tolist()}")
+                
+                # Check if we immediately hit EOS
+                if len(new_tokens) > 0 and new_tokens[0].item() == self.eos_token_id:
+                    logger.warning(f"Model immediately generated EOS token. No content generated.")
+                    response = ""
+                else:
+                    # Decode the new tokens
+                    response = self.tokenizer.decode(
+                        new_tokens,
+                        skip_special_tokens=True
+                    )
+                    
+                    # If response is empty or very short, try decoding without skipping special tokens
+                    if not response.strip() or len(response.strip()) < 10:
+                        logger.warning(f"Response is empty or very short ({len(response)} chars). Trying without skip_special_tokens...")
+                        response_with_special = self.tokenizer.decode(
+                            new_tokens,
+                            skip_special_tokens=False
+                        )
+                        logger.warning(f"Response with special tokens: {response_with_special[:500]}")
+                        # Try to extract meaningful content
+                        response = response_with_special
+                
+                # Also decode the full output for comparison
+                full_response = self.tokenizer.decode(
+                    outputs[0],
+                    skip_special_tokens=True
+                )
+                
+                # If the response is still empty, try extracting from full response
+                if not response.strip():
+                    logger.warning(f"Generated tokens decode to empty string. Trying full output...")
+                    response = full_response
+                    # Try to remove the prompt if it's still in the response
+                    if prompt in response:
+                        response = response.replace(prompt, "").strip()
+                    # Also try removing common prefixes
+                    for prefix in ["<start_of_turn>model", "<start_of_turn>model\n", "model\n", "<start_of_turn>model ", "model "]:
+                        if response.startswith(prefix):
+                            response = response[len(prefix):].strip()
+                
+                logger.info(f"Decoded response length: {len(response)} chars")
+                if response:
+                    logger.debug(f"Response preview: {response[:300]}...")
+                else:
+                    logger.warning(f"Response is empty after all decoding attempts!")
             
             # Parse JSON response
             scores = self._parse_json_response(response)
