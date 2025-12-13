@@ -309,10 +309,10 @@ Respond in JSON format:
             # Create prompt with AVA score
             prompt = self.prompt_template.format(ava_score=ava_score)
             
-            # Prepare inputs
+            # Prepare inputs - processor expects images as a list
             inputs = self.processor(
                 text=prompt,
-                images=image,
+                images=[image],
                 return_tensors="pt"
             ).to(self.device)
             

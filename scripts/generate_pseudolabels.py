@@ -321,12 +321,20 @@ def main():
     try:
         # Load configuration
         config = {}
-        if args.config and os.path.exists(args.config):
-            logger.info(f"Loading configuration from: {args.config}")
-            with open(args.config, 'r') as f:
-                config = yaml.safe_load(f)
+        # Default config path
+        default_config_path = Path(__file__).parent.parent / "config" / "training" / "pseudolabel_config.yaml"
         
-        # Override config with command line arguments
+        # Use provided config or default config if it exists
+        config_path = args.config if args.config else (default_config_path if default_config_path.exists() else None)
+        
+        if config_path and os.path.exists(config_path):
+            logger.info(f"Loading configuration from: {config_path}")
+            with open(config_path, 'r') as f:
+                loaded_config = yaml.safe_load(f)
+                if loaded_config:
+                    config.update(loaded_config)
+        
+        # Override config with command line arguments (CLI args take precedence)
         config.update({
             'model_name': args.model_name,
             'device': args.device,
