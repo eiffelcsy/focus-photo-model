@@ -209,6 +209,16 @@ class GemmaPseudolabelGenerator:
                 trust_remote_code=True
             )
             
+            # Ensure tokenizer has pad_token set (required for generation)
+            if self.tokenizer.pad_token is None:
+                if self.tokenizer.eos_token is not None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+                    logger.info("Set pad_token to eos_token")
+                else:
+                    # Use unk_token as fallback
+                    self.tokenizer.pad_token = self.tokenizer.unk_token if self.tokenizer.unk_token is not None else "<pad>"
+                    logger.warning("Set pad_token to unk_token or default")
+            
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 trust_remote_code=True,
@@ -220,6 +230,32 @@ class GemmaPseudolabelGenerator:
                 self.model = self.model.to(self.device)
             
             self.model.eval()
+            
+            # Store token IDs for generation
+            self.pad_token_id = self.tokenizer.pad_token_id
+            self.eos_token_id = self.tokenizer.eos_token_id
+            
+            # Validate token IDs and ensure they're within vocabulary range
+            vocab_size = len(self.tokenizer) if hasattr(self.tokenizer, '__len__') else self.tokenizer.vocab_size
+            
+            if self.pad_token_id is None:
+                self.pad_token_id = self.eos_token_id
+            
+            if self.pad_token_id is None:
+                raise ValueError("Both pad_token_id and eos_token_id are None. Cannot generate.")
+            
+            # Validate token IDs are within vocabulary range
+            if vocab_size and (self.pad_token_id >= vocab_size or self.pad_token_id < 0):
+                logger.warning(f"pad_token_id {self.pad_token_id} is out of vocabulary range [0, {vocab_size}). Using eos_token_id instead.")
+                if self.eos_token_id is not None and 0 <= self.eos_token_id < vocab_size:
+                    self.pad_token_id = self.eos_token_id
+                else:
+                    raise ValueError(f"Invalid token IDs: pad_token_id={self.pad_token_id}, eos_token_id={self.eos_token_id}, vocab_size={vocab_size}")
+            
+            if self.eos_token_id is not None and vocab_size and (self.eos_token_id >= vocab_size or self.eos_token_id < 0):
+                logger.warning(f"eos_token_id {self.eos_token_id} is out of vocabulary range [0, {vocab_size}).")
+            
+            logger.info(f"Using pad_token_id: {self.pad_token_id}, eos_token_id: {self.eos_token_id}, vocab_size: {vocab_size}")
             
             # Check if processor has image token information
             if hasattr(self.processor, 'image_token'):
@@ -359,20 +395,51 @@ Respond in JSON format:
             with torch.no_grad():
                 # Get input_ids length for proper decoding
                 input_ids = inputs.get('input_ids')
+                if input_ids is None:
+                    raise ValueError("input_ids not found in processor outputs")
+                
                 input_length = input_ids.shape[1] if input_ids is not None else 0
                 
-                # Set pad_token_id if not already set
-                pad_token_id = self.tokenizer.eos_token_id
-                if pad_token_id is None:
-                    pad_token_id = self.tokenizer.pad_token_id
+                # Ensure temperature is valid (must be > 0 for sampling)
+                safe_temperature = max(0.01, min(2.0, self.temperature))
+                if safe_temperature != self.temperature:
+                    logger.debug(f"Adjusted temperature from {self.temperature} to {safe_temperature}")
                 
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    temperature=self.temperature,
-                    do_sample=True,
-                    pad_token_id=pad_token_id
-                )
+                # Prepare generation parameters with proper token IDs
+                generation_kwargs = {
+                    'max_new_tokens': self.max_new_tokens,
+                    'temperature': safe_temperature,
+                    'do_sample': True,
+                    'pad_token_id': self.pad_token_id,
+                }
+                
+                # Add eos_token_id if available
+                if self.eos_token_id is not None:
+                    generation_kwargs['eos_token_id'] = self.eos_token_id
+                
+                # Prepare model inputs - only pass valid keys that the model expects
+                # For vision-language models, we typically need input_ids and pixel_values
+                model_inputs = {}
+                for key in ['input_ids', 'pixel_values', 'image_grid_thw', 'attention_mask']:
+                    if key in inputs and inputs[key] is not None:
+                        model_inputs[key] = inputs[key]
+                
+                # Ensure we have at least input_ids
+                if 'input_ids' not in model_inputs:
+                    raise ValueError("input_ids is required but not found in inputs")
+                
+                try:
+                    outputs = self.model.generate(
+                        **model_inputs,
+                        **generation_kwargs
+                    )
+                except RuntimeError as e:
+                    if "CUDA" in str(e) or "cuda" in str(e).lower():
+                        logger.error(f"CUDA error during generation for image {image_id}: {e}")
+                        logger.error("This might be due to invalid token IDs or generation parameters")
+                        # Re-raise with more context
+                        raise RuntimeError(f"CUDA error during generation. Check token IDs (pad: {self.pad_token_id}, eos: {self.eos_token_id}) and generation parameters.") from e
+                    raise
             
             # Decode response - skip the input tokens
             if input_length > 0 and len(outputs[0]) > input_length:
