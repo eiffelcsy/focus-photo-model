@@ -1,56 +1,19 @@
 # Core ML/DL dependencies
 torch
 torchvision
-transformers
-accelerate
 datasets
-evaluate
+accelerate
+transformers
 
-# SmolVLM and Vision-Language Models
-# Note: SmolVLM might need specific installation from HuggingFace
-# pip install git+https://github.com/huggingface/transformers.git
-
-# Image processing and computer vision
+# Image processing
 Pillow
-opencv-python
-albumentations
-timm
-
-# Data handling and processing
-numpy
-pandas
-scipy
-scikit-learn
-h5py
 
 # Configuration and utilities
 PyYAML
-omegaconf
-hydra-core
 tqdm
 wandb
 tensorboard
 
-# AVA dataset specific
-requests
-beautifulsoup4
-lxml
-
-# Distributed training and optimization
-deepspeed
-bitsandbytes
-peft
-loralib
-
-# Evaluation metrics
-lpips
-pytorch-fid
-clip-by-openai
-
-# Development and debugging
-rich
-loguru
-psutil
-
-# Optional: For advanced image quality assessment
-pyiqa
+numpy
+scikit-learn
+pandas

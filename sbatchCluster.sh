@@ -21,7 +21,7 @@
 # Purge the environment, load the modules we require.
 # Refer to https://violet.scis.dev/docs/Advanced%20settings/module for more information
 module purge
-module load Python/3.11.7
+module load Python/3.12.8-GCCcore-13.3.0
 
 # Create a virtual environment can be commented off if you already have a virtual environment
 # python3.11 -m venv ~/myenv
@@ -34,4 +34,4 @@ source ~/myenv/bin/activate
 # pip3 install numpy
 
 # Submit your job to the cluster
-srun --gres=gpu:1 python scripts/generate_pseudolabels.py --input /common/scratch/users/e/eiffelchong.2023/ava/images/ --output results/
+srun --gres=gpu:1 python scripts/generate_pseudolabels.py --ava-dataset  --output results/
