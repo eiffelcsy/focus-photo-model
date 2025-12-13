@@ -383,6 +383,13 @@ Respond in JSON format:
                     return_tensors="pt"
                 )
             
+            # Log what the processor returned (for debugging)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Processor returned keys: {list(inputs.keys())}")
+                if 'input_ids' in inputs:
+                    logger.debug(f"input_ids shape: {inputs['input_ids'].shape}, dtype: {inputs['input_ids'].dtype}")
+                    logger.debug(f"input_ids min: {inputs['input_ids'].min().item()}, max: {inputs['input_ids'].max().item()}")
+            
             # Move inputs to device
             if hasattr(inputs, 'to'):
                 inputs = inputs.to(self.device)
@@ -398,35 +405,65 @@ Respond in JSON format:
                 if input_ids is None:
                     raise ValueError("input_ids not found in processor outputs")
                 
+                # Validate input_ids - check for invalid token IDs
+                vocab_size = len(self.tokenizer) if hasattr(self.tokenizer, '__len__') else getattr(self.tokenizer, 'vocab_size', None)
+                if vocab_size:
+                    invalid_tokens = (input_ids >= vocab_size) | (input_ids < 0)
+                    if invalid_tokens.any():
+                        invalid_count = invalid_tokens.sum().item()
+                        max_token = input_ids.max().item()
+                        min_token = input_ids.min().item()
+                        logger.error(f"Found {invalid_count} invalid token IDs in input_ids for image {image_id}")
+                        logger.error(f"Token ID range: [{min_token}, {max_token}], vocab_size: {vocab_size}")
+                        raise ValueError(f"Invalid token IDs detected: {invalid_count} tokens out of range [0, {vocab_size})")
+                
                 input_length = input_ids.shape[1] if input_ids is not None else 0
                 
-                # Ensure temperature is valid (must be > 0 for sampling)
-                safe_temperature = max(0.01, min(2.0, self.temperature))
-                if safe_temperature != self.temperature:
-                    logger.debug(f"Adjusted temperature from {self.temperature} to {safe_temperature}")
+                # For low temperatures (< 0.5), use greedy decoding to avoid numerical issues
+                # For higher temperatures, use sampling
+                use_sampling = self.temperature > 0.5
                 
                 # Prepare generation parameters with proper token IDs
                 generation_kwargs = {
                     'max_new_tokens': self.max_new_tokens,
-                    'temperature': safe_temperature,
-                    'do_sample': True,
                     'pad_token_id': self.pad_token_id,
                 }
+                
+                # Add sampling parameters only if using sampling
+                if use_sampling:
+                    safe_temperature = max(0.01, min(2.0, self.temperature))
+                    generation_kwargs['temperature'] = safe_temperature
+                    generation_kwargs['do_sample'] = True
+                else:
+                    # Use greedy decoding for low temperatures
+                    generation_kwargs['do_sample'] = False
+                    logger.debug(f"Using greedy decoding (temperature={self.temperature} is low)")
                 
                 # Add eos_token_id if available
                 if self.eos_token_id is not None:
                     generation_kwargs['eos_token_id'] = self.eos_token_id
                 
-                # Prepare model inputs - only pass valid keys that the model expects
-                # For vision-language models, we typically need input_ids and pixel_values
+                # Prepare model inputs - pass all inputs from processor
+                # The processor should have already formatted everything correctly
                 model_inputs = {}
-                for key in ['input_ids', 'pixel_values', 'image_grid_thw', 'attention_mask']:
-                    if key in inputs and inputs[key] is not None:
-                        model_inputs[key] = inputs[key]
+                for key, value in inputs.items():
+                    if value is not None:
+                        # Validate tensor values
+                        if isinstance(value, torch.Tensor):
+                            if torch.isnan(value).any():
+                                raise ValueError(f"NaN values found in {key}")
+                            if torch.isinf(value).any():
+                                raise ValueError(f"Inf values found in {key}")
+                        model_inputs[key] = value
                 
                 # Ensure we have at least input_ids
                 if 'input_ids' not in model_inputs:
                     raise ValueError("input_ids is required but not found in inputs")
+                
+                # Log what we're passing to generate (for debugging)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Passing to generate: keys={list(model_inputs.keys())}")
+                    logger.debug(f"Generation kwargs: {generation_kwargs}")
                 
                 try:
                     outputs = self.model.generate(
@@ -436,9 +473,25 @@ Respond in JSON format:
                 except RuntimeError as e:
                     if "CUDA" in str(e) or "cuda" in str(e).lower():
                         logger.error(f"CUDA error during generation for image {image_id}: {e}")
+                        logger.error(f"Input shape: {input_ids.shape}, Token ID range: [{input_ids.min().item()}, {input_ids.max().item()}]")
+                        logger.error(f"Generation kwargs: {generation_kwargs}")
                         logger.error("This might be due to invalid token IDs or generation parameters")
-                        # Re-raise with more context
-                        raise RuntimeError(f"CUDA error during generation. Check token IDs (pad: {self.pad_token_id}, eos: {self.eos_token_id}) and generation parameters.") from e
+                        # Try with greedy decoding as fallback
+                        if use_sampling:
+                            logger.info("Retrying with greedy decoding (do_sample=False)")
+                            generation_kwargs['do_sample'] = False
+                            generation_kwargs.pop('temperature', None)
+                            try:
+                                outputs = self.model.generate(
+                                    **model_inputs,
+                                    **generation_kwargs
+                                )
+                                logger.info("Greedy decoding succeeded")
+                            except Exception as e2:
+                                logger.error(f"Greedy decoding also failed: {e2}")
+                                raise RuntimeError(f"CUDA error during generation. Check token IDs (pad: {self.pad_token_id}, eos: {self.eos_token_id}) and generation parameters.") from e
+                        else:
+                            raise RuntimeError(f"CUDA error during generation. Check token IDs (pad: {self.pad_token_id}, eos: {self.eos_token_id}) and generation parameters.") from e
                     raise
             
             # Decode response - skip the input tokens
