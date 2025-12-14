@@ -10,7 +10,7 @@ model:
 
 # Generation Parameters
 generation:
-  max_new_tokens: 200
+  max_new_tokens: 500
   do_sample: false
   temperature: 0.1
   top_p: 0.95
@@ -32,7 +32,7 @@ processing:
   
 # Prompt Configuration
 prompt:
-  system_message: "You are a professional photography critic with expertise in aesthetic evaluation."
+  system_message: "You are a professional photography critic with expertise in aesthetic evaluation. You can only output valid JSON and nothing else."
   
   criteria:
     - name: "impact"
