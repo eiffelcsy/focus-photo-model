@@ -17,8 +17,8 @@ generation:
 
 # Dataset Configuration
 dataset:
-  ava_csv_path: "/common/home/users/e/eiffelchong.2023/focus-photo-model/data/ground_truth_dataset.csv"  # Path to AVA dataset CSV/TXT
-  images_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/data/images"  # Directory containing AVA images
+  ava_csv_path: "/common/home/users/e/eiffelchong.2023/focus-photo-model/src/data/ground_truth_dataset.csv"  # Path to AVA dataset CSV/TXT
+  images_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/src/data/images"  # Directory containing AVA images
   output_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/results"  # Where to save pseudolabels
   output_format: "json"  # Format: json or csv
 
