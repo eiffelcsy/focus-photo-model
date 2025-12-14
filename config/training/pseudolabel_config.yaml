@@ -17,9 +17,9 @@ generation:
 
 # Dataset Configuration
 dataset:
-  ava_csv_path: "data/ava/AVA.txt"  # Path to AVA dataset CSV/TXT
-  images_dir: "data/ava/images"  # Directory containing AVA images
-  output_dir: "data/ava/pseudolabels"  # Where to save pseudolabels
+  ava_csv_path: "data/ground_truth_dataset.csv"  # Path to AVA dataset CSV/TXT
+  images_dir: "data/images"  # Directory containing AVA images
+  output_dir: "results"  # Where to save pseudolabels
   output_format: "json"  # Format: json or csv
 
 # Processing Configuration
