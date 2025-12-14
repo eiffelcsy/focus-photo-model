@@ -280,27 +280,50 @@ class PseudolabelGenerator:
         
         data = []
         with open(ava_path, 'r') as f:
+            # Read first line to check if it's CSV format
+            first_line = f.readline().strip()
+            
+            # Determine delimiter (comma for CSV, space for TXT)
+            delimiter = ',' if ',' in first_line else ' '
+            
+            # Check if first line is a header
+            is_header = 'image' in first_line.lower() or 'vote' in first_line.lower()
+            
+            # If not a header, process it
+            if not is_header:
+                f.seek(0)  # Reset to beginning
+            
             for line in f:
-                parts = line.strip().split()
+                parts = line.strip().split(delimiter)
                 if len(parts) >= 2:
-                    # AVA.txt format: image_id, score_1, score_2, ..., score_10, ...
-                    # We can either compute mean or it might be pre-computed
-                    image_id = parts[0]
+                    # CSV format: image_id, vote_1, vote_2, ..., vote_10
+                    # TXT format: image_id, score_1, score_2, ..., score_10, ...
+                    image_id = parts[0].strip()
                     
-                    # Try to compute AVA score from distribution (columns 2-11)
-                    if len(parts) >= 12:
-                        scores = [int(parts[i]) for i in range(2, 12)]
-                        total_votes = sum(scores)
-                        if total_votes > 0:
-                            weighted_sum = sum((i + 1) * scores[i] for i in range(10))
-                            ava_score = weighted_sum / total_votes
-                        else:
+                    # Skip empty lines or invalid data
+                    if not image_id:
+                        continue
+                    
+                    # Try to compute AVA score from vote distribution
+                    if len(parts) >= 11:
+                        try:
+                            # Votes are in columns 1-10 (normalized or counts)
+                            votes = [float(parts[i]) for i in range(1, 11)]
+                            total_votes = sum(votes)
+                            
+                            if total_votes > 0:
+                                # Compute weighted average score (1-10)
+                                weighted_sum = sum((i + 1) * votes[i] for i in range(10))
+                                ava_score = weighted_sum / total_votes
+                            else:
+                                continue
+                        except (ValueError, IndexError):
                             continue
                     else:
-                        # Assume second column is the score
+                        # Assume second column is the pre-computed score
                         try:
                             ava_score = float(parts[1])
-                        except ValueError:
+                        except (ValueError, IndexError):
                             continue
                     
                     data.append((image_id, ava_score))
