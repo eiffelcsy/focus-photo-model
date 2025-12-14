@@ -1,12 +1,57 @@
-# Minimal Pseudolabel Generation Configuration
+# Pseudolabel Generation Configuration
 
 # Model Configuration
-model_name: "google/gemma-3-4b-it"  # Gemma model for pseudolabel generation
-device: "cuda"  # Device selection: auto, cuda, cpu, mps
+model:
+  model_id: "google/gemma-3-4b-it"
+  device_map: "cuda"
+  dtype: "bfloat16"  # Use bfloat16 for efficiency
+  load_in_8bit: false  # Set to true for memory-constrained environments
+  load_in_4bit: false
 
 # Generation Parameters
-max_new_tokens: 200  # Maximum tokens to generate per assessment
-temperature: 0.3  # Low temperature for consistent scoring
+generation:
+  max_new_tokens: 200
+  do_sample: false
+  temperature: 0.1
+  top_p: 0.95
 
-# Processing Options
-recursive_search: true  # Search subdirectories when processing directories
+# Dataset Configuration
+dataset:
+  ava_csv_path: "data/ava/AVA.txt"  # Path to AVA dataset CSV/TXT
+  images_dir: "data/ava/images"  # Directory containing AVA images
+  output_dir: "data/ava/pseudolabels"  # Where to save pseudolabels
+  output_format: "json"  # Format: json or csv
+
+# Processing Configuration
+processing:
+  batch_size: 1  # Process one image at a time (VLMs don't support batching easily)
+  num_workers: 0  # Number of parallel workers (use 0 for single process)
+  max_images: null  # Set to a number to limit processing (null for all)
+  resume_from_checkpoint: true  # Resume from last saved checkpoint
+  checkpoint_interval: 100  # Save progress every N images
+  
+# Prompt Configuration
+prompt:
+  system_message: "You are a professional photography critic with expertise in aesthetic evaluation."
+  
+  criteria:
+    - name: "impact"
+      description: "Emotional response and memorability upon first viewing"
+    - name: "style"
+      description: "Artistic expression and creative vision"
+    - name: "composition"
+      description: "Visual arrangement and balance of elements"
+    - name: "lighting"
+      description: "Quality and effectiveness of illumination"
+    - name: "color_balance"
+      description: "Harmony and effectiveness of color relationships"
+  
+  score_range: [1, 10]
+  use_ava_score_as_context: true  # Include AVA score in prompt for guidance
+
+# Logging Configuration
+logging:
+  log_interval: 10  # Log progress every N images
+  save_failed_images: true  # Save list of images that failed processing
+  verbose: true
+

@@ -1,687 +1,448 @@
 """
-Pseudolabel Generator for Photography Quality Assessment using Gemma 3-4B
+Pseudolabel Generator for AVA Dataset using Gemma 3 Vision-Language Model
 
-This module implements a minimal pseudolabel generator that uses Gemma 3-4B model
-to assess photography quality across 5 criteria: impact, style, composition, lighting, and color balance.
+This module generates detailed aesthetic attribute scores (impact, style, composition,
+lighting, color_balance) for images using Google's Gemma 3 4B model.
 """
 
 import json
 import logging
-from typing import Dict, List, Optional, Any
+import os
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+import re
+
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoProcessor, Gemma3ForConditionalGeneration
 from tqdm import tqdm
-import re
-import csv
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import yaml
 
 
-def load_ava_dataset(
-    csv_path: str,
-    images_dir: str,
-    max_samples: Optional[int] = None,
-    check_image_exists: bool = True
-) -> List[Dict[str, Any]]:
+class PseudolabelGenerator:
     """
-    Load AVA dataset from CSV file and map to image paths.
+    Generates pseudolabels for images using Gemma 3 vision-language model.
     
-    The CSV file contains vote distributions (vote_1 to vote_10) for each image.
-    The mean aesthetic score is calculated as: sum(vote_i * i) for i in 1..10
-    
-    Args:
-        csv_path: Path to the ground_truth_dataset.csv file
-        images_dir: Directory containing the AVA images
-        max_samples: Maximum number of samples to load (None for all)
-        check_image_exists: Whether to verify that image files exist before including them
-        
-    Returns:
-        List of dicts with 'image_path' and 'ava_score' keys
+    Attributes:
+        model: The Gemma 3 vision-language model
+        processor: The image and text processor
+        config: Configuration dictionary
+        logger: Logger instance
     """
-    csv_path = Path(csv_path)
-    images_dir = Path(images_dir)
     
-    if not csv_path.exists():
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
-    
-    if not images_dir.exists():
-        raise FileNotFoundError(f"Images directory not found: {images_dir}")
-    
-    image_data = []
-    skipped_missing = 0
-    skipped_invalid = 0
-    
-    logger.info(f"Loading AVA dataset from {csv_path}")
-    logger.info(f"Images directory: {images_dir}")
-    
-    try:
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            
-            for row_idx, row in enumerate(tqdm(reader, desc="Loading AVA dataset"), start=1):
-                if max_samples and len(image_data) >= max_samples:
-                    break
-                
-                try:
-                    # Get image number
-                    image_num = row['image_num'].strip()
-                    
-                    # Calculate mean AVA score from vote distribution
-                    # Score = sum(vote_i * i) for i in 1..10
-                    mean_score = 0.0
-                    for i in range(1, 11):
-                        vote_key = f'vote_{i}'
-                        if vote_key in row:
-                            try:
-                                vote_proportion = float(row[vote_key])
-                                mean_score += vote_proportion * i
-                            except (ValueError, TypeError):
-                                pass
-                    
-                    # Construct image path
-                    image_path = images_dir / f"{image_num}.jpg"
-                    
-                    # Check if image exists if requested
-                    if check_image_exists and not image_path.exists():
-                        skipped_missing += 1
-                        if skipped_missing <= 10:  # Log first 10 missing images
-                            logger.debug(f"Image not found: {image_path}")
-                        continue
-                    
-                    image_data.append({
-                        'image_path': str(image_path),
-                        'ava_score': mean_score
-                    })
-                    
-                except Exception as e:
-                    skipped_invalid += 1
-                    if skipped_invalid <= 10:  # Log first 10 invalid rows
-                        logger.warning(f"Error processing row {row_idx}: {e}")
-                    continue
-        
-        logger.info(f"Loaded {len(image_data)} images from AVA dataset")
-        if skipped_missing > 0:
-            logger.warning(f"Skipped {skipped_missing} images that were not found")
-        if skipped_invalid > 0:
-            logger.warning(f"Skipped {skipped_invalid} rows with invalid data")
-        
-        return image_data
-        
-    except Exception as e:
-        logger.error(f"Error loading AVA dataset: {e}")
-        raise
-
-
-class PhotographyQualityDataset:
-    """Simple dataset class for loading images."""
-    
-    def __init__(self, image_data: List[Dict[str, Any]]):
+    def __init__(self, config_path: Optional[str] = None, config_dict: Optional[Dict] = None):
         """
-        Args:
-            image_data: List of dicts with 'image_path' and 'ava_score' keys
-        """
-        self.image_data = image_data
-    
-    def __len__(self):
-        return len(self.image_data)
-    
-    def __getitem__(self, idx):
-        data = self.image_data[idx]
-        try:
-            image = Image.open(data['image_path']).convert('RGB')
-            return {
-                'image': image,
-                'image_path': data['image_path'],
-                'image_id': Path(data['image_path']).stem,
-                'ava_score': data.get('ava_score', 5.0)
-            }
-        except Exception as e:
-            logger.error(f"Error loading image {data['image_path']}: {e}")
-            return None
-
-
-class GemmaPseudolabelGenerator:
-    """
-    Pseudolabel generator using Gemma 3-4B for photography quality assessment.
-    
-    Assesses images on 5 criteria: impact, style, composition, lighting, color_balance.
-    """
-    
-    def __init__(
-        self,
-        model_name: str = "google/gemma-3-4b-it",
-        device: str = "auto",
-        max_new_tokens: int = 200,
-        temperature: float = 0.3
-    ):
-        """
-        Initialize the Gemma pseudolabel generator.
+        Initialize the pseudolabel generator.
         
         Args:
-            model_name: HuggingFace model identifier for Gemma
-            device: Device to run inference on ('auto', 'cuda', 'cpu')
-            max_new_tokens: Maximum tokens to generate
-            temperature: Sampling temperature for generation
+            config_path: Path to YAML configuration file
+            config_dict: Configuration dictionary (if provided, overrides config_path)
         """
-        self.model_name = model_name
-        self.device = self._setup_device(device)
-        self.max_new_tokens = max_new_tokens
-        self.temperature = temperature
+        # Load configuration
+        if config_dict is not None:
+            self.config = config_dict
+        elif config_path is not None:
+            with open(config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+        else:
+            raise ValueError("Either config_path or config_dict must be provided")
         
-        # Photography assessment criteria
-        self.criteria = ['impact', 'style', 'composition', 'lighting', 'color_balance']
+        # Setup logging
+        self.logger = self._setup_logging()
         
         # Load model and processor
+        self.model = None
+        self.processor = None
         self._load_model()
         
-        # Create prompt template
-        self.prompt_template = self._create_prompt_template()
+        # Track statistics
+        self.stats = {
+            'total_processed': 0,
+            'successful': 0,
+            'failed': 0,
+            'failed_images': []
+        }
     
-    def _setup_device(self, device: str) -> torch.device:
-        """Setup the appropriate device for inference."""
-        if device == "auto":
-            if torch.cuda.is_available():
-                return torch.device("cuda")
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                return torch.device("mps")
-            else:
-                return torch.device("cpu")
-        return torch.device(device)
+    def _setup_logging(self) -> logging.Logger:
+        """Setup logging configuration."""
+        logging.basicConfig(
+            level=logging.INFO if self.config['logging']['verbose'] else logging.WARNING,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        return logging.getLogger(__name__)
     
     def _load_model(self):
-        """Load Gemma model and processor."""
-        try:
-            logger.info(f"Loading Gemma model: {self.model_name}")
-            
-            # Load processor and tokenizer
-            # For Gemma 3, the processor handles both text and images
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_name,
-                trust_remote_code=True
-            )
-            
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name,
-                trust_remote_code=True
-            )
-            
-            # Ensure tokenizer has pad_token set (required for generation)
-            if self.tokenizer.pad_token is None:
-                if self.tokenizer.eos_token is not None:
-                    self.tokenizer.pad_token = self.tokenizer.eos_token
-                    logger.info("Set pad_token to eos_token")
-                else:
-                    # Use unk_token as fallback
-                    self.tokenizer.pad_token = self.tokenizer.unk_token if self.tokenizer.unk_token is not None else "<pad>"
-                    logger.warning("Set pad_token to unk_token or default")
-            
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-                device_map="auto" if self.device.type == "cuda" else None
-            )
-            
-            if self.device.type != "cuda":
-                self.model = self.model.to(self.device)
-            
-            self.model.eval()
-            
-            # Store token IDs for generation
-            self.pad_token_id = self.tokenizer.pad_token_id
-            self.eos_token_id = self.tokenizer.eos_token_id
-            
-            # Validate token IDs and ensure they're within vocabulary range
-            vocab_size = len(self.tokenizer) if hasattr(self.tokenizer, '__len__') else self.tokenizer.vocab_size
-            
-            if self.pad_token_id is None:
-                self.pad_token_id = self.eos_token_id
-            
-            if self.pad_token_id is None:
-                raise ValueError("Both pad_token_id and eos_token_id are None. Cannot generate.")
-            
-            # Validate token IDs are within vocabulary range
-            if vocab_size and (self.pad_token_id >= vocab_size or self.pad_token_id < 0):
-                logger.warning(f"pad_token_id {self.pad_token_id} is out of vocabulary range [0, {vocab_size}). Using eos_token_id instead.")
-                if self.eos_token_id is not None and 0 <= self.eos_token_id < vocab_size:
-                    self.pad_token_id = self.eos_token_id
-                else:
-                    raise ValueError(f"Invalid token IDs: pad_token_id={self.pad_token_id}, eos_token_id={self.eos_token_id}, vocab_size={vocab_size}")
-            
-            if self.eos_token_id is not None and vocab_size and (self.eos_token_id >= vocab_size or self.eos_token_id < 0):
-                logger.warning(f"eos_token_id {self.eos_token_id} is out of vocabulary range [0, {vocab_size}).")
-            
-            logger.info(f"Using pad_token_id: {self.pad_token_id}, eos_token_id: {self.eos_token_id}, vocab_size: {vocab_size}")
-            
-            # Check if processor has image token information
-            if hasattr(self.processor, 'image_token'):
-                logger.info(f"Processor image token: {self.processor.image_token}")
-            if hasattr(self.processor, 'image_start_token'):
-                logger.info(f"Processor image start token: {self.processor.image_start_token}")
-            if hasattr(self.processor, 'tokenizer') and hasattr(self.processor.tokenizer, 'image_token'):
-                logger.info(f"Tokenizer image token: {self.processor.tokenizer.image_token}")
-            
-            logger.info("Model loaded successfully")
-            
-        except Exception as e:
-            logger.error(f"Error loading model: {e}")
-            raise
-    
-    def _create_prompt_template(self) -> str:
-        """Create the prompt template for assessment."""
-        # Gemma 3 uses a specific format with turn markers and image tokens
-        # The image token should be placed where the image appears in the conversation
-        return """<start_of_turn>user
-<start_of_image>
-Analyze this photograph and rate it on these 5 criteria (scale 1-10):
-
-1. IMPACT: Emotional response and memorability upon first viewing
-2. STYLE: Artistic expression and creative vision
-3. COMPOSITION: Visual arrangement and balance of elements
-4. LIGHTING: Quality and effectiveness of illumination
-5. COLOR BALANCE: Harmony and effectiveness of color relationships
-
-The overall aesthetic score for this image is {ava_score:.1f}/10.
-Your individual scores should reflect this overall quality level.
-
-Respond in JSON format:
-{{
-    "impact": X.X,
-    "style": X.X,
-    "composition": X.X,
-    "lighting": X.X,
-    "color_balance": X.X,
-    "reasoning": "brief explanation of scores"
-}}
-<end_of_turn>
-<start_of_turn>model
-"""
-    
-    def _parse_json_response(self, response: str) -> Dict[str, Any]:
-        """Parse JSON response from the model."""
-        default_scores = {
-            'impact': 5.0,
-            'style': 5.0,
-            'composition': 5.0,
-            'lighting': 5.0,
-            'color_balance': 5.0,
-            'reasoning': 'Error parsing response'
+        """Load the Gemma 3 model and processor."""
+        self.logger.info(f"Loading model: {self.config['model']['model_id']}")
+        
+        model_id = self.config['model']['model_id']
+        device_map = self.config['model']['device_map']
+        
+        # Model loading kwargs
+        model_kwargs = {
+            'device_map': device_map,
         }
         
-        try:
-            # Extract JSON from response
-            json_match = re.search(r'\{[^}]*\}', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                parsed = json.loads(json_str)
-                
-                # Validate and clean scores
-                for criterion in self.criteria:
-                    if criterion in parsed:
-                        try:
-                            score = float(parsed[criterion])
-                            parsed[criterion] = max(1.0, min(10.0, score))  # Clamp to 1-10
-                        except (ValueError, TypeError):
-                            parsed[criterion] = default_scores[criterion]
-                    else:
-                        parsed[criterion] = default_scores[criterion]
-                
-                if 'reasoning' not in parsed:
-                    parsed['reasoning'] = 'No reasoning provided'
-                
-                return parsed
-            else:
-                logger.warning("No JSON found in response")
-                logger.warning(f"Response: {response}")
-                return default_scores
-                
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON decode error: {e}")
-            return default_scores
-        except Exception as e:
-            logger.warning(f"Error parsing response: {e}")
-            return default_scores
+        # Add quantization if specified
+        if self.config['model'].get('load_in_8bit', False):
+            model_kwargs['load_in_8bit'] = True
+        elif self.config['model'].get('load_in_4bit', False):
+            model_kwargs['load_in_4bit'] = True
+        
+        # Load model
+        self.model = Gemma3ForConditionalGeneration.from_pretrained(
+            model_id,
+            **model_kwargs
+        ).eval()
+        
+        # Load processor
+        self.processor = AutoProcessor.from_pretrained(model_id)
+        
+        self.logger.info("Model loaded successfully")
     
-    def assess_single_image(self, image: Image.Image, image_id: str, ava_score: float) -> Dict[str, Any]:
+    def _build_prompt(self, ava_score: float) -> str:
         """
-        Assess a single image using the 5 criteria.
+        Build the prompt for the model.
         
         Args:
-            image: PIL Image to assess
-            image_id: Unique identifier for the image
+            ava_score: The AVA aesthetic score for the image
+            
+        Returns:
+            Formatted prompt string
+        """
+        criteria_text = "\n    ".join([
+            f"{i+1}. {criterion['name'].upper()}: {criterion['description']}"
+            for i, criterion in enumerate(self.config['prompt']['criteria'])
+        ])
+        
+        prompt = f"""Analyze this photograph and rate it on these 5 criteria (scale 1-10):
+    
+    {criteria_text}
+    """
+        
+        if self.config['prompt']['use_ava_score_as_context']:
+            prompt += f"""
+    The overall aesthetic score for this image is {ava_score:.1f}/10.
+    Your individual scores should reflect this overall quality level.
+    """
+        
+        prompt += """
+    Respond in JSON format:
+    {{
+        "impact": X.X,
+        "style": X.X,
+        "composition": X.X,
+        "lighting": X.X,
+        "color_balance": X.X,
+        "reasoning": "brief explanation of scores"
+    }}
+    """
+        
+        return prompt
+    
+    def _extract_json_from_response(self, response: str) -> Optional[Dict]:
+        """
+        Extract JSON from model response, handling various formats.
+        
+        Args:
+            response: Raw model response
+            
+        Returns:
+            Parsed JSON dictionary or None if parsing fails
+        """
+        try:
+            # Try to parse directly
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to find JSON in markdown code blocks
+        json_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+        
+        # Try to find any JSON object
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(0))
+            except json.JSONDecodeError:
+                pass
+        
+        self.logger.warning(f"Failed to extract JSON from response: {response[:200]}")
+        return None
+    
+    def generate_pseudolabel(
+        self, 
+        image_path: str, 
+        ava_score: float
+    ) -> Optional[Dict]:
+        """
+        Generate pseudolabel for a single image.
+        
+        Args:
+            image_path: Path to the image file
             ava_score: AVA aesthetic score for the image
             
         Returns:
-            Dictionary containing assessment results
+            Dictionary containing pseudolabel scores or None if generation fails
         """
         try:
-            # Create prompt with AVA score
-            prompt = self.prompt_template.format(ava_score=ava_score)
+            # Load image
+            image = Image.open(image_path).convert('RGB')
             
-            # Debug: Log prompt to verify image token is present
-            if "<start_of_image>" not in prompt and "<image>" not in prompt:
-                logger.warning(f"Prompt for image {image_id} does not contain image token!")
-                logger.debug(f"Prompt preview: {prompt[:200]}...")
+            # Build prompt
+            prompt = self._build_prompt(ava_score)
             
-            # Prepare inputs - Gemma 3 processor handles images and text together
-            # The processor expects the image token in the prompt and matches it with the image
-            # Try with list format (common in transformers)
-            try:
-                inputs = self.processor(
-                    text=prompt,
-                    images=[image],  # List format
-                    return_tensors="pt"
-                )
-            except Exception as e:
-                # If list format fails, try single image
-                logger.debug(f"List format failed, trying single image: {e}")
-                inputs = self.processor(
-                    text=prompt,
-                    images=image,  # Single image format
-                    return_tensors="pt"
-                )
+            # Prepare messages
+            system_message = self.config['prompt']['system_message']
+            messages = [
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": system_message}]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": prompt}
+                    ]
+                }
+            ]
             
-            # Log what the processor returned (for debugging)
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Processor returned keys: {list(inputs.keys())}")
-                if 'input_ids' in inputs:
-                    logger.debug(f"input_ids shape: {inputs['input_ids'].shape}, dtype: {inputs['input_ids'].dtype}")
-                    logger.debug(f"input_ids min: {inputs['input_ids'].min().item()}, max: {inputs['input_ids'].max().item()}")
+            # Process inputs
+            inputs = self.processor.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt"
+            )
             
-            # Move inputs to device
-            if hasattr(inputs, 'to'):
-                inputs = inputs.to(self.device)
-            else:
-                # Handle case where inputs is a dict
-                inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                         for k, v in inputs.items()}
+            # Move to device and convert dtype
+            dtype = getattr(torch, self.config['model']['dtype'])
+            inputs = {k: v.to(self.model.device, dtype=dtype if v.dtype == torch.float32 else v.dtype) 
+                     for k, v in inputs.items()}
+            
+            input_len = inputs["input_ids"].shape[-1]
             
             # Generate response
-            with torch.no_grad():
-                # Get input_ids length for proper decoding
-                input_ids = inputs.get('input_ids')
-                if input_ids is None:
-                    raise ValueError("input_ids not found in processor outputs")
-                
-                # Validate input_ids - check for invalid token IDs
-                vocab_size = len(self.tokenizer) if hasattr(self.tokenizer, '__len__') else getattr(self.tokenizer, 'vocab_size', None)
-                if vocab_size:
-                    invalid_tokens = (input_ids >= vocab_size) | (input_ids < 0)
-                    if invalid_tokens.any():
-                        invalid_count = invalid_tokens.sum().item()
-                        max_token = input_ids.max().item()
-                        min_token = input_ids.min().item()
-                        logger.error(f"Found {invalid_count} invalid token IDs in input_ids for image {image_id}")
-                        logger.error(f"Token ID range: [{min_token}, {max_token}], vocab_size: {vocab_size}")
-                        raise ValueError(f"Invalid token IDs detected: {invalid_count} tokens out of range [0, {vocab_size})")
-                
-                input_length = input_ids.shape[1] if input_ids is not None else 0
-                
-                # For low temperatures (< 0.5), use greedy decoding to avoid numerical issues
-                # For higher temperatures, use sampling
-                use_sampling = self.temperature > 0.5
-                
-                # Prepare generation parameters with proper token IDs
-                # For Gemma 3, we need to be careful about pad_token_id
-                # Don't pass pad_token_id - let the model handle it internally
-                generation_kwargs = {
-                    'max_new_tokens': self.max_new_tokens,
-                }
-                
-                # Add eos_token_id if available - this is critical for stopping generation
-                if self.eos_token_id is not None:
-                    generation_kwargs['eos_token_id'] = self.eos_token_id
-                    generation_kwargs['pad_token_id'] = self.eos_token_id  # Use EOS as pad to avoid padding issues
-                else:
-                    # Fallback: use pad_token_id if EOS is not available
-                    if self.pad_token_id is not None:
-                        generation_kwargs['pad_token_id'] = self.pad_token_id
-                
-                # Add sampling parameters only if using sampling
-                if use_sampling:
-                    safe_temperature = max(0.01, min(2.0, self.temperature))
-                    generation_kwargs['temperature'] = safe_temperature
-                    generation_kwargs['do_sample'] = True
-                else:
-                    # Use greedy decoding for low temperatures
-                    generation_kwargs['do_sample'] = False
-                    logger.debug(f"Using greedy decoding (temperature={self.temperature} is low)")
-                
-                # Ensure the model stops generating when it should
-                generation_kwargs['early_stopping'] = True
-                
-                # Prepare model inputs - pass all inputs from processor
-                # The processor should have already formatted everything correctly
-                model_inputs = {}
-                for key, value in inputs.items():
-                    if value is not None:
-                        # Validate tensor values
-                        if isinstance(value, torch.Tensor):
-                            if torch.isnan(value).any():
-                                raise ValueError(f"NaN values found in {key}")
-                            if torch.isinf(value).any():
-                                raise ValueError(f"Inf values found in {key}")
-                        model_inputs[key] = value
-                
-                # Ensure we have at least input_ids
-                if 'input_ids' not in model_inputs:
-                    raise ValueError("input_ids is required but not found in inputs")
-                
-                # Log what we're passing to generate (for debugging)
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"Passing to generate: keys={list(model_inputs.keys())}")
-                    logger.debug(f"Generation kwargs: {generation_kwargs}")
-                
-                try:
-                    outputs = self.model.generate(
-                        **model_inputs,
-                        **generation_kwargs
-                    )
-                    
-                    # Debug: Check what was generated
-                    logger.info(f"Generated output shape: {outputs.shape}")
-                    if len(outputs[0]) > input_length:
-                        new_token_ids = outputs[0][input_length:input_length+50].tolist()
-                        logger.info(f"First 50 new token IDs: {new_token_ids}")
-                        # Check if all tokens are pad tokens
-                        unique_tokens = set(new_token_ids)
-                        logger.info(f"Unique token IDs in first 50: {unique_tokens}")
-                        if len(unique_tokens) == 1 and 0 in unique_tokens:
-                            logger.error("All generated tokens are pad tokens (0). Model may not be generating properly.")
-                        elif self.pad_token_id in unique_tokens:
-                            pad_count = new_token_ids.count(self.pad_token_id)
-                            logger.warning(f"Found {pad_count} pad tokens in first 50 generated tokens")
-                except RuntimeError as e:
-                    if "CUDA" in str(e) or "cuda" in str(e).lower():
-                        logger.error(f"CUDA error during generation for image {image_id}: {e}")
-                        logger.error(f"Input shape: {input_ids.shape}, Token ID range: [{input_ids.min().item()}, {input_ids.max().item()}]")
-                        logger.error(f"Generation kwargs: {generation_kwargs}")
-                        logger.error("This might be due to invalid token IDs or generation parameters")
-                        # Try with greedy decoding as fallback
-                        if use_sampling:
-                            logger.info("Retrying with greedy decoding (do_sample=False)")
-                            generation_kwargs['do_sample'] = False
-                            generation_kwargs.pop('temperature', None)
-                            try:
-                                outputs = self.model.generate(
-                                    **model_inputs,
-                                    **generation_kwargs
-                                )
-                                logger.info("Greedy decoding succeeded")
-                            except Exception as e2:
-                                logger.error(f"Greedy decoding also failed: {e2}")
-                                raise RuntimeError(f"CUDA error during generation. Check token IDs (pad: {self.pad_token_id}, eos: {self.eos_token_id}) and generation parameters.") from e
-                        else:
-                            raise RuntimeError(f"CUDA error during generation. Check token IDs (pad: {self.pad_token_id}, eos: {self.eos_token_id}) and generation parameters.") from e
-                    raise
-            
-            # Decode response - skip the input tokens
-            # Note: outputs contains the full sequence including input_ids
-            output_length = len(outputs[0])
-            num_new_tokens = output_length - input_length
-            
-            # Log output info for debugging
-            logger.info(f"Image {image_id}: Input length={input_length}, Output length={output_length}, New tokens={num_new_tokens}")
-            
-            if num_new_tokens <= 0:
-                logger.warning(f"No new tokens generated for image {image_id}. Output length ({output_length}) <= input length ({input_length})")
-                # Decode the full output to see what we got
-                full_response = self.tokenizer.decode(
-                    outputs[0],
-                    skip_special_tokens=False  # Don't skip special tokens to see what's there
+            gen_config = self.config['generation']
+            with torch.inference_mode():
+                generation = self.model.generate(
+                    **inputs,
+                    max_new_tokens=gen_config['max_new_tokens'],
+                    do_sample=gen_config['do_sample'],
+                    temperature=gen_config.get('temperature', 1.0) if gen_config['do_sample'] else None,
+                    top_p=gen_config.get('top_p', 1.0) if gen_config['do_sample'] else None,
                 )
-                logger.warning(f"Full decoded output (with special tokens): {full_response[:500]}")
-                # Try again without special tokens
-                response = self.tokenizer.decode(
-                    outputs[0],
-                    skip_special_tokens=True
-                )
-                logger.warning(f"Full decoded output (no special tokens): {response[:500]}")
-            else:
-                # Decode only the newly generated tokens
-                new_tokens = outputs[0][input_length:]
-                
-                # Filter out pad tokens and EOS tokens from the end
-                # Pad tokens have ID 0, EOS tokens have ID 1 (based on earlier logs)
-                filtered_tokens = []
-                for token_id in new_tokens:
-                    token_id_val = token_id.item()
-                    # Stop at EOS token
-                    if token_id_val == self.eos_token_id:
-                        break
-                    # Skip pad tokens (ID 0)
-                    if token_id_val != self.pad_token_id:
-                        filtered_tokens.append(token_id)
-                
-                # Log the actual token IDs for debugging
-                logger.debug(f"New token IDs (first 50): {new_tokens[:50].tolist()}")
-                logger.debug(f"Filtered token IDs (first 50): {[t.item() for t in filtered_tokens[:50]]}")
-                
-                if len(filtered_tokens) == 0:
-                    logger.warning(f"All generated tokens were pad/EOS tokens. No content generated.")
-                    response = ""
-                else:
-                    # Convert filtered tokens back to tensor for decoding
-                    filtered_tokens_tensor = torch.tensor(filtered_tokens, device=new_tokens.device)
-                    
-                    # Decode the filtered tokens
-                    response = self.tokenizer.decode(
-                        filtered_tokens_tensor,
-                        skip_special_tokens=True
-                    )
-                    
-                    # If response is still empty, try without skipping special tokens
-                    if not response.strip():
-                        logger.warning(f"Response is empty after filtering. Trying without skip_special_tokens...")
-                        response = self.tokenizer.decode(
-                            filtered_tokens_tensor,
-                            skip_special_tokens=False
-                        )
-                        logger.warning(f"Response with special tokens: {response[:500]}")
-                
-                # Also decode the full output for comparison
-                full_response = self.tokenizer.decode(
-                    outputs[0],
-                    skip_special_tokens=True
-                )
-                
-                # If the response is still empty, try extracting from full response
-                if not response.strip():
-                    logger.warning(f"Generated tokens decode to empty string. Trying full output...")
-                    response = full_response
-                    # Try to remove the prompt if it's still in the response
-                    if prompt in response:
-                        response = response.replace(prompt, "").strip()
-                    # Also try removing common prefixes
-                    for prefix in ["<start_of_turn>model", "<start_of_turn>model\n", "model\n", "<start_of_turn>model ", "model "]:
-                        if response.startswith(prefix):
-                            response = response[len(prefix):].strip()
-                
-                logger.info(f"Decoded response length: {len(response)} chars")
-                if response:
-                    logger.debug(f"Response preview: {response[:300]}...")
-                else:
-                    logger.warning(f"Response is empty after all decoding attempts!")
+                generation = generation[0][input_len:]
             
-            # Parse JSON response
-            scores = self._parse_json_response(response)
+            # Decode response
+            decoded = self.processor.decode(generation, skip_special_tokens=True)
             
-            # Calculate composite score
-            criterion_scores = [scores[c] for c in self.criteria]
-            composite_score = sum(criterion_scores) / len(criterion_scores)
+            # Extract JSON from response
+            result = self._extract_json_from_response(decoded)
             
-            return {
-                'image_id': image_id,
-                'ava_score': ava_score,
-                'scores': scores,
-                'composite_score': composite_score,
-                'raw_response': response
-            }
+            if result is None:
+                self.logger.error(f"Failed to parse response for {image_path}")
+                return None
+            
+            # Validate required fields
+            required_fields = [criterion['name'] for criterion in self.config['prompt']['criteria']]
+            if not all(field in result for field in required_fields):
+                self.logger.error(f"Missing required fields in response for {image_path}")
+                return None
+            
+            # Add metadata
+            result['image_path'] = image_path
+            result['ava_score'] = ava_score
+            result['raw_response'] = decoded
+            
+            return result
             
         except Exception as e:
-            logger.error(f"Error assessing image {image_id}: {e}")
-            # Return default scores on error
-            default_scores = {c: 5.0 for c in self.criteria}
-            default_scores['reasoning'] = f'Error during assessment: {str(e)}'
-            
-            return {
-                'image_id': image_id,
-                'ava_score': ava_score,
-                'scores': default_scores,
-                'composite_score': 5.0,
-                'raw_response': ''
-            }
+            self.logger.error(f"Error processing {image_path}: {str(e)}")
+            return None
     
-    def generate_pseudolabels(
-        self,
-        image_data: List[Dict[str, Any]],
-        output_path: str
-    ) -> Dict[str, Any]:
+    def load_ava_dataset(self) -> List[Tuple[str, float]]:
         """
-        Generate pseudolabels for a batch of images.
+        Load AVA dataset from CSV/TXT file.
+        
+        Returns:
+            List of tuples (image_id, ava_score)
+        """
+        ava_path = self.config['dataset']['ava_csv_path']
+        self.logger.info(f"Loading AVA dataset from {ava_path}")
+        
+        data = []
+        with open(ava_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    # AVA.txt format: image_id, score_1, score_2, ..., score_10, ...
+                    # We can either compute mean or it might be pre-computed
+                    image_id = parts[0]
+                    
+                    # Try to compute AVA score from distribution (columns 2-11)
+                    if len(parts) >= 12:
+                        scores = [int(parts[i]) for i in range(2, 12)]
+                        total_votes = sum(scores)
+                        if total_votes > 0:
+                            weighted_sum = sum((i + 1) * scores[i] for i in range(10))
+                            ava_score = weighted_sum / total_votes
+                        else:
+                            continue
+                    else:
+                        # Assume second column is the score
+                        try:
+                            ava_score = float(parts[1])
+                        except ValueError:
+                            continue
+                    
+                    data.append((image_id, ava_score))
+        
+        self.logger.info(f"Loaded {len(data)} images from AVA dataset")
+        return data
+    
+    def load_checkpoint(self, output_dir: str) -> set:
+        """
+        Load checkpoint to resume processing.
         
         Args:
-            image_data: List of dicts with 'image_path' and 'ava_score' keys
-            output_path: Directory to save results
+            output_dir: Directory containing output files
             
         Returns:
-            Dictionary containing batch processing results
+            Set of already processed image IDs
         """
-        output_path = Path(output_path)
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        dataset = PhotographyQualityDataset(image_data)
-        all_results = []
-        
-        logger.info(f"Starting pseudolabel generation for {len(image_data)} images")
-        
-        for idx in tqdm(range(len(dataset)), desc="Generating pseudolabels"):
-            item = dataset[idx]
-            if item is None:
-                continue
-                
-            try:
-                # Assess the image
-                result = self.assess_single_image(
-                    item['image'], 
-                    item['image_id'], 
-                    item['ava_score']
-                )
-                result['source_path'] = item['image_path']
-                all_results.append(result)
-                
-            except Exception as e:
-                logger.error(f"Failed to process image {item['image_path']}: {e}")
-        
-        # Save results
-        results_file = output_path / "pseudolabels.json"
-        with open(results_file, 'w') as f:
-            json.dump(all_results, f, indent=2, default=str)
-        
-        logger.info(f"Generated {len(all_results)} pseudolabels. Results saved to {results_file}")
-        return {'results': all_results, 'output_file': str(results_file)}
+        checkpoint_file = os.path.join(output_dir, 'checkpoint.txt')
+        if os.path.exists(checkpoint_file):
+            with open(checkpoint_file, 'r') as f:
+                processed = set(line.strip() for line in f)
+            self.logger.info(f"Resuming from checkpoint: {len(processed)} images already processed")
+            return processed
+        return set()
     
+    def save_checkpoint(self, output_dir: str, processed_ids: set):
+        """Save checkpoint of processed image IDs."""
+        checkpoint_file = os.path.join(output_dir, 'checkpoint.txt')
+        with open(checkpoint_file, 'w') as f:
+            for image_id in sorted(processed_ids):
+                f.write(f"{image_id}\n")
+    
+    def process_dataset(self):
+        """Process entire AVA dataset and generate pseudolabels."""
+        # Load dataset
+        ava_data = self.load_ava_dataset()
+        
+        # Apply max_images limit if specified
+        max_images = self.config['processing'].get('max_images')
+        if max_images is not None:
+            ava_data = ava_data[:max_images]
+            self.logger.info(f"Limited to {max_images} images")
+        
+        # Setup output directory
+        output_dir = self.config['dataset']['output_dir']
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Load checkpoint if resuming
+        processed_ids = set()
+        if self.config['processing']['resume_from_checkpoint']:
+            processed_ids = self.load_checkpoint(output_dir)
+        
+        # Setup output file
+        output_format = self.config['dataset']['output_format']
+        output_file = os.path.join(output_dir, f'pseudolabels.{output_format}')
+        
+        # Open output file in append mode
+        if output_format == 'json':
+            results = []
+            if os.path.exists(output_file):
+                with open(output_file, 'r') as f:
+                    try:
+                        results = json.load(f)
+                    except json.JSONDecodeError:
+                        results = []
+        
+        images_dir = self.config['dataset']['images_dir']
+        checkpoint_interval = self.config['processing']['checkpoint_interval']
+        log_interval = self.config['logging']['log_interval']
+        
+        # Process each image
+        for idx, (image_id, ava_score) in enumerate(tqdm(ava_data, desc="Generating pseudolabels")):
+            # Skip if already processed
+            if image_id in processed_ids:
+                continue
+            
+            # Build image path
+            image_path = os.path.join(images_dir, f"{image_id}.jpg")
+            if not os.path.exists(image_path):
+                self.logger.warning(f"Image not found: {image_path}")
+                self.stats['failed'] += 1
+                self.stats['failed_images'].append(image_id)
+                continue
+            
+            # Generate pseudolabel
+            result = self.generate_pseudolabel(image_path, ava_score)
+            
+            if result is not None:
+                result['image_id'] = image_id
+                results.append(result)
+                processed_ids.add(image_id)
+                self.stats['successful'] += 1
+            else:
+                self.stats['failed'] += 1
+                self.stats['failed_images'].append(image_id)
+            
+            self.stats['total_processed'] += 1
+            
+            # Log progress
+            if (idx + 1) % log_interval == 0:
+                self.logger.info(
+                    f"Processed {self.stats['total_processed']} images | "
+                    f"Successful: {self.stats['successful']} | "
+                    f"Failed: {self.stats['failed']}"
+                )
+            
+            # Save checkpoint
+            if (idx + 1) % checkpoint_interval == 0:
+                # Save results
+                with open(output_file, 'w') as f:
+                    json.dump(results, f, indent=2)
+                
+                # Save checkpoint
+                self.save_checkpoint(output_dir, processed_ids)
+                self.logger.info(f"Checkpoint saved at {idx + 1} images")
+        
+        # Final save
+        with open(output_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        self.save_checkpoint(output_dir, processed_ids)
+        
+        # Save failed images list
+        if self.config['logging']['save_failed_images'] and self.stats['failed_images']:
+            failed_file = os.path.join(output_dir, 'failed_images.txt')
+            with open(failed_file, 'w') as f:
+                for image_id in self.stats['failed_images']:
+                    f.write(f"{image_id}\n")
+        
+        # Print final statistics
+        self.logger.info("=" * 50)
+        self.logger.info("Pseudolabel Generation Complete")
+        self.logger.info(f"Total processed: {self.stats['total_processed']}")
+        self.logger.info(f"Successful: {self.stats['successful']}")
+        self.logger.info(f"Failed: {self.stats['failed']}")
+        self.logger.info(f"Output saved to: {output_file}")
+        self.logger.info("=" * 50)
+
+
+if __name__ == "__main__":
+    # Example usage
+    config_path = "config/training/pseudolabel_config.yaml"
+    generator = PseudolabelGenerator(config_path=config_path)
+    generator.process_dataset()
+

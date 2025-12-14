@@ -1,479 +1,197 @@
 #!/usr/bin/env python3
 """
-Generate Pseudolabels Script
-
-Command-line interface for generating pseudolabels using SmolVLM for photography quality assessment.
-This script can process individual images, directories of images, or the AVA dataset.
+Script to generate pseudolabels for AVA dataset using Gemma 3 VLM.
 
 Usage:
-    python scripts/generate_pseudolabels.py --input /path/to/images --output /path/to/results
-    python scripts/generate_pseudolabels.py --ava-split train --num-samples 1000 --output results/
     python scripts/generate_pseudolabels.py --config config/training/pseudolabel_config.yaml
+    
+    # Or with custom settings:
+    python scripts/generate_pseudolabels.py --config config/training/pseudolabel_config.yaml --max-images 1000
 """
 
 import argparse
-import logging
-import os
 import sys
 from pathlib import Path
-from typing import List, Optional
-import yaml
-import json
-from datetime import datetime
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from training.pseudolabel_generator import GemmaPseudolabelGenerator, load_ava_dataset
-
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('pseudolabel_generation.log')
-    ]
-)
-logger = logging.getLogger(__name__)
+from src.training.pseudolabel_generator import PseudolabelGenerator
 
 
-def find_images_in_directory(directory: str, recursive: bool = True) -> List[str]:
-    """
-    Find all image files in a directory.
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Generate pseudolabels for AVA dataset using Gemma 3 VLM"
+    )
     
-    Args:
-        directory: Path to directory to search
-        recursive: Whether to search subdirectories
-        
-    Returns:
-        List of image file paths
-    """
-    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp', '.gif'}
-    image_paths = []
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config/training/pseudolabel_config.yaml",
+        help="Path to configuration file (default: config/training/pseudolabel_config.yaml)"
+    )
     
-    directory = Path(directory)
-    if not directory.exists():
-        logger.error(f"Directory does not exist: {directory}")
-        return []
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        default=None,
+        help="Maximum number of images to process (default: process all)"
+    )
     
-    if recursive:
-        pattern = "**/*"
-    else:
-        pattern = "*"
+    parser.add_argument(
+        "--ava-csv",
+        type=str,
+        default=None,
+        help="Path to AVA CSV file (overrides config)"
+    )
     
-    for file_path in directory.glob(pattern):
-        if file_path.is_file() and file_path.suffix.lower() in image_extensions:
-            image_paths.append(str(file_path))
+    parser.add_argument(
+        "--images-dir",
+        type=str,
+        default=None,
+        help="Path to images directory (overrides config)"
+    )
     
-    logger.info(f"Found {len(image_paths)} images in {directory}")
-    return sorted(image_paths)
-
-
-def validate_config(config: dict) -> dict:
-    """
-    Validate and set defaults for configuration.
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory for pseudolabels (overrides config)"
+    )
     
-    Args:
-        config: Configuration dictionary
-        
-    Returns:
-        Validated configuration dictionary
-    """
-    defaults = {
-        'model_name': 'HuggingFaceTB/SmolVLM-Instruct',
-        'device': 'auto',
-        'batch_size': 4,
-        'max_new_tokens': 256,
-        'temperature': 0.7,
-        'cache_dir': None,
-        'save_individual': True,
-        'save_summary': True,
-        'recursive_search': True
-    }
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Don't resume from checkpoint, start fresh"
+    )
     
-    # Apply defaults for missing keys
-    for key, default_value in defaults.items():
-        if key not in config:
-            config[key] = default_value
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Batch size for processing (overrides config)"
+    )
     
-    # Validate specific values
-    if config['batch_size'] < 1:
-        config['batch_size'] = 1
-        logger.warning("Batch size must be >= 1, setting to 1")
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=None,
+        help="Save checkpoint every N images (overrides config)"
+    )
     
-    if config['max_new_tokens'] < 50:
-        config['max_new_tokens'] = 50
-        logger.warning("max_new_tokens too small, setting to 50")
+    parser.add_argument(
+        "--model-id",
+        type=str,
+        default=None,
+        help="Model ID to use (overrides config, e.g., google/gemma-3-4b-it)"
+    )
     
-    if not 0.0 <= config['temperature'] <= 2.0:
-        config['temperature'] = 0.7
-        logger.warning("Temperature should be between 0.0 and 2.0, setting to 0.7")
+    parser.add_argument(
+        "--load-in-8bit",
+        action="store_true",
+        help="Load model in 8-bit quantization for memory efficiency"
+    )
     
-    return config
-
-
-def create_output_directory(output_path: str) -> Path:
-    """
-    Create output directory with timestamp if it doesn't exist.
+    parser.add_argument(
+        "--load-in-4bit",
+        action="store_true",
+        help="Load model in 4-bit quantization for memory efficiency"
+    )
     
-    Args:
-        output_path: Base output path
-        
-    Returns:
-        Path object for the created directory
-    """
-    output_path = Path(output_path)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging"
+    )
     
-    # If output path doesn't exist, create it
-    if not output_path.exists():
-        output_path.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Created output directory: {output_path}")
-    
-    # Create timestamped subdirectory for this run
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = output_path / f"pseudolabels_{timestamp}"
-    run_dir.mkdir(exist_ok=True)
-    
-    logger.info(f"Results will be saved to: {run_dir}")
-    return run_dir
-
-
-def save_run_metadata(output_dir: Path, args: argparse.Namespace, config: dict, image_paths: List[str]):
-    """
-    Save metadata about the current run.
-    
-    Args:
-        output_dir: Output directory
-        args: Command line arguments
-        config: Configuration used
-        image_paths: List of processed image paths
-    """
-    metadata = {
-        'run_info': {
-            'timestamp': datetime.now().isoformat(),
-            'command_line_args': vars(args),
-            'total_images': len(image_paths),
-            'config': config
-        },
-        'input_info': {
-            'source_type': 'ava_dataset' if args.ava_dataset else 'local_files',
-            'ava_csv': str(args.ava_csv) if args.ava_csv else None,
-            'ava_images_dir': str(args.ava_images_dir) if args.ava_images_dir else None,
-            'input_paths': args.input if args.input else [],
-            'num_samples': args.num_samples,
-            'recursive_search': config.get('recursive_search', True)
-        },
-        'sample_paths': image_paths[:100]  # Save first 100 paths as sample
-    }
-    
-    metadata_file = output_dir / "run_metadata.json"
-    with open(metadata_file, 'w') as f:
-        json.dump(metadata, f, indent=2, default=str)
-    
-    logger.info(f"Run metadata saved to: {metadata_file}")
+    return parser.parse_args()
 
 
 def main():
-    """Main function for pseudolabel generation script."""
-    parser = argparse.ArgumentParser(
-        description="Generate pseudolabels for photography quality assessment using SmolVLM",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-            Examples:
-            # Process a directory of images
-            python scripts/generate_pseudolabels.py --input /path/to/images --output results/
-
-            # Process AVA dataset with 1000 samples
-            python scripts/generate_pseudolabels.py --ava-dataset --num-samples 1000 --output results/
-
-            # Use custom configuration
-            python scripts/generate_pseudolabels.py --config config/training/pseudolabel_config.yaml --input images/ --output results/
-
-            # Process specific image files
-            python scripts/generate_pseudolabels.py --input image1.jpg image2.jpg --output results/
-        """
-    )
+    """Main function."""
+    args = parse_args()
     
-    # Input options
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument(
-        '--input', '-i',
-        nargs='+',
-        help='Input image files or directories to process'
-    )
-    input_group.add_argument(
-        '--ava-dataset',
-        action='store_true',
-        help='Load AVA dataset from data folder (uses ground_truth_dataset.csv and images/)'
-    )
+    print("=" * 70)
+    print("AVA Dataset Pseudolabel Generation with Gemma 3")
+    print("=" * 70)
+    print(f"Config file: {args.config}")
+    print()
     
-    # Output options
-    parser.add_argument(
-        '--output', '-o',
-        required=True,
-        help='Output directory for pseudolabel results'
-    )
+    # Load configuration
+    import yaml
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
     
-    # Configuration
-    parser.add_argument(
-        '--config', '-c',
-        help='Path to YAML configuration file'
-    )
+    # Override config with command line arguments
+    if args.max_images is not None:
+        config['processing']['max_images'] = args.max_images
+        print(f"Limiting to {args.max_images} images")
     
-    # Processing options
-    parser.add_argument(
-        '--num-samples', '-n',
-        type=int,
-        help='Maximum number of samples to process (useful for testing)'
-    )
+    if args.ava_csv is not None:
+        config['dataset']['ava_csv_path'] = args.ava_csv
+        print(f"Using AVA CSV: {args.ava_csv}")
     
-    parser.add_argument(
-        '--batch-size', '-b',
-        type=int,
-        default=None,
-        help='Batch size for processing (default: from config or 4)'
-    )
+    if args.images_dir is not None:
+        config['dataset']['images_dir'] = args.images_dir
+        print(f"Using images directory: {args.images_dir}")
     
-    parser.add_argument(
-        '--device',
-        choices=['auto', 'cuda', 'cpu', 'mps'],
-        default=None,
-        help='Device to use for inference (default: from config or auto)'
-    )
+    if args.output_dir is not None:
+        config['dataset']['output_dir'] = args.output_dir
+        print(f"Output directory: {args.output_dir}")
     
-    parser.add_argument(
-        '--model-name',
-        default=None,
-        help='HuggingFace model name to use (default: from config)'
-    )
+    if args.no_resume:
+        config['processing']['resume_from_checkpoint'] = False
+        print("Starting fresh (not resuming from checkpoint)")
     
-    # Output format options
-    parser.add_argument(
-        '--no-individual',
-        action='store_true',
-        help='Skip saving individual assessment files'
-    )
+    if args.batch_size is not None:
+        config['processing']['batch_size'] = args.batch_size
     
-    parser.add_argument(
-        '--no-summary',
-        action='store_true',
-        help='Skip saving summary CSV file'
-    )
+    if args.checkpoint_interval is not None:
+        config['processing']['checkpoint_interval'] = args.checkpoint_interval
+        print(f"Checkpoint interval: {args.checkpoint_interval}")
     
-    parser.add_argument(
-        '--no-recursive',
-        action='store_true',
-        help='Do not search subdirectories when processing directories'
-    )
+    if args.model_id is not None:
+        config['model']['model_id'] = args.model_id
+        print(f"Using model: {args.model_id}")
     
-    # Advanced options
-    parser.add_argument(
-        '--temperature',
-        type=float,
-        default=None,
-        help='Sampling temperature for text generation (default: from config or 0.7)'
-    )
+    if args.load_in_8bit:
+        config['model']['load_in_8bit'] = True
+        config['model']['load_in_4bit'] = False
+        print("Loading model in 8-bit quantization")
     
-    parser.add_argument(
-        '--max-tokens',
-        type=int,
-        default=None,
-        help='Maximum tokens to generate per assessment (default: from config or 256)'
-    )
+    if args.load_in_4bit:
+        config['model']['load_in_4bit'] = True
+        config['model']['load_in_8bit'] = False
+        print("Loading model in 4-bit quantization")
     
-    parser.add_argument(
-        '--cache-dir',
-        help='Directory to cache model files'
-    )
-    
-    parser.add_argument(
-        '--ava-csv',
-        help='Path to AVA ground truth CSV file (default: src/data/ground_truth_dataset.csv)'
-    )
-    
-    parser.add_argument(
-        '--ava-images-dir',
-        help='Path to AVA images directory (default: src/data/images)'
-    )
-    
-    parser.add_argument(
-        '--skip-missing-images',
-        action='store_true',
-        help='Skip images that are not found (default: True when using AVA dataset)'
-    )
-    
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Enable verbose logging'
-    )
-    
-    args = parser.parse_args()
-    
-    # Set logging level
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+        config['logging']['verbose'] = True
     
-    logger.info("Starting pseudolabel generation")
-    logger.info(f"Arguments: {vars(args)}")
+    print()
+    print("Initializing pseudolabel generator...")
+    print()
     
+    # Create generator and process dataset
     try:
-        # Load configuration
-        config = {}
-        # Default config path
-        default_config_path = Path(__file__).parent.parent / "config" / "training" / "pseudolabel_config.yaml"
+        generator = PseudolabelGenerator(config_dict=config)
+        generator.process_dataset()
         
-        # Use provided config or default config if it exists
-        config_path = args.config if args.config else (default_config_path if default_config_path.exists() else None)
-        
-        if config_path and os.path.exists(config_path):
-            logger.info(f"Loading configuration from: {config_path}")
-            with open(config_path, 'r') as f:
-                loaded_config = yaml.safe_load(f)
-                if loaded_config:
-                    config.update(loaded_config)
-        
-        # Override config with command line arguments (only if explicitly provided)
-        # CLI args take precedence, but None values mean "use config file value"
-        if args.model_name is not None:
-            config['model_name'] = args.model_name
-        if args.device is not None:
-            config['device'] = args.device
-        if args.batch_size is not None:
-            config['batch_size'] = args.batch_size
-        if args.max_tokens is not None:
-            config['max_new_tokens'] = args.max_tokens
-        if args.temperature is not None:
-            config['temperature'] = args.temperature
-        if args.cache_dir is not None:
-            config['cache_dir'] = args.cache_dir
-        if args.no_individual:
-            config['save_individual'] = False
-        if args.no_summary:
-            config['save_summary'] = False
-        if args.no_recursive:
-            config['recursive_search'] = False
-        
-        # Validate configuration
-        config = validate_config(config)
-        logger.info(f"Using configuration: {config}")
-        
-        # Create pseudolabel generator
-        logger.info("Initializing Gemma pseudolabel generator...")
-        generator = GemmaPseudolabelGenerator(
-            model_name=config['model_name'],
-            device=config['device'],
-            max_new_tokens=config['max_new_tokens'],
-            temperature=config['temperature']
-        )
-        
-        # Get image data (paths + AVA scores)
-        image_data = []
-        
-        if args.ava_dataset:
-            # Load AVA dataset
-            project_root = Path(__file__).parent.parent
-            csv_path = args.ava_csv or (project_root / "src" / "data" / "ground_truth_dataset.csv")
-            images_dir = args.ava_images_dir or (project_root / "src" / "data" / "images")
-            
-            logger.info(f"Loading AVA dataset from CSV: {csv_path}")
-            logger.info(f"Images directory: {images_dir}")
-            
-            try:
-                image_data = load_ava_dataset(
-                    csv_path=str(csv_path),
-                    images_dir=str(images_dir),
-                    max_samples=args.num_samples,
-                    check_image_exists=not args.skip_missing_images
-                )
-            except Exception as e:
-                logger.error(f"Failed to load AVA dataset: {e}")
-                if args.verbose:
-                    import traceback
-                    traceback.print_exc()
-                return 1
-        else:
-            # Process local files/directories
-            if not args.input:
-                logger.error("Either --input or --ava-dataset must be specified")
-                return 1
-                
-            for input_path in args.input:
-                input_path = Path(input_path)
-                
-                if input_path.is_file():
-                    # Single file
-                    if input_path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp', '.gif'}:
-                        image_data.append({
-                            'image_path': str(input_path),
-                            'ava_score': 5.0  # Default score if not provided
-                        })
-                    else:
-                        logger.warning(f"Skipping non-image file: {input_path}")
-                
-                elif input_path.is_dir():
-                    # Directory
-                    dir_images = find_images_in_directory(
-                        str(input_path),
-                        recursive=config['recursive_search']
-                    )
-                    for img_path in dir_images:
-                        image_data.append({
-                            'image_path': img_path,
-                            'ava_score': 5.0  # Default score if not provided
-                        })
-                
-                else:
-                    logger.error(f"Input path does not exist: {input_path}")
-        
-        # Apply sample limit if specified (only for non-AVA datasets, as AVA loader handles it)
-        if not args.ava_dataset and args.num_samples and len(image_data) > args.num_samples:
-            logger.info(f"Limiting to {args.num_samples} samples (from {len(image_data)} total)")
-            image_data = image_data[:args.num_samples]
-        
-        if not image_data:
-            logger.error("No images found to process!")
-            return 1
-        
-        logger.info(f"Found {len(image_data)} images to process")
-        
-        # Create output directory
-        output_dir = create_output_directory(args.output)
-        
-        # Save run metadata
-        save_run_metadata(output_dir, args, config, [item['image_path'] for item in image_data])
-        
-        # Generate pseudolabels
-        logger.info("Starting pseudolabel generation...")
-        results = generator.generate_pseudolabels(
-            image_data=image_data,
-            output_path=str(output_dir)
-        )
-        
-        # Print summary
-        logger.info("=" * 60)
-        logger.info("PSEUDOLABEL GENERATION COMPLETE")
-        logger.info("=" * 60)
-        logger.info(f"Total images: {len(image_data)}")
-        logger.info(f"Successfully processed: {len(results['results'])}")
-        logger.info(f"Results saved to: {results['output_file']}")
-        logger.info("=" * 60)
-        
-        return 0
+        print()
+        print("✓ Pseudolabel generation completed successfully!")
         
     except KeyboardInterrupt:
-        logger.info("Process interrupted by user")
-        return 130
-    
+        print("\n\nInterrupted by user. Progress has been saved.")
+        print("Run the script again to resume from checkpoint.")
+        sys.exit(0)
+        
     except Exception as e:
-        logger.error(f"Error during pseudolabel generation: {e}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
-        return 1
+        print(f"\n\n✗ Error during pseudolabel generation: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    exit_code = main()
-    sys.exit(exit_code)
+    main()
+
