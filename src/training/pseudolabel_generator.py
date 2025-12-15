@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import re
 
+import numpy as np
 import torch
 from PIL import Image
 from transformers import AutoProcessor, Gemma3ForConditionalGeneration
@@ -338,6 +339,109 @@ class PseudolabelGenerator:
         self.logger.info(f"Loaded {len(data)} images from AVA dataset")
         return data
     
+    def stratified_sample(
+        self, 
+        ava_data: List[Tuple[str, float]], 
+        n_samples: int,
+        n_bins: int = 5,
+        random_seed: Optional[int] = None
+    ) -> List[Tuple[str, float]]:
+        """
+        Perform stratified sampling based on AVA scores.
+        
+        This ensures representative sampling across different quality levels by:
+        1. Dividing scores into bins (e.g., 1-3, 3-5, 5-7, 7-9, 9-10)
+        2. Sampling proportionally from each bin
+        
+        Args:
+            ava_data: List of (image_id, ava_score) tuples
+            n_samples: Number of samples to select
+            n_bins: Number of bins to divide scores into (default: 5)
+            random_seed: Random seed for reproducibility
+            
+        Returns:
+            Stratified sample of ava_data
+        """
+        if random_seed is not None:
+            np.random.seed(random_seed)
+        
+        # Extract scores
+        scores = np.array([score for _, score in ava_data])
+        
+        # Create bins based on score distribution
+        # Use percentile-based bins for better distribution
+        bin_edges = np.percentile(scores, np.linspace(0, 100, n_bins + 1))
+        # Ensure unique bin edges (in case of duplicate scores)
+        bin_edges = np.unique(bin_edges)
+        
+        # Assign each sample to a bin
+        bin_indices = np.digitize(scores, bin_edges[1:-1])
+        
+        # Count samples per bin
+        unique_bins, bin_counts = np.unique(bin_indices, return_counts=True)
+        
+        self.logger.info(f"Score distribution across {len(unique_bins)} bins:")
+        for bin_idx, count in zip(unique_bins, bin_counts):
+            if bin_idx < len(bin_edges) - 1:
+                bin_start = bin_edges[bin_idx]
+                bin_end = bin_edges[bin_idx + 1]
+                self.logger.info(f"  Bin {bin_idx} [{bin_start:.2f}, {bin_end:.2f}): {count} images")
+            else:
+                self.logger.info(f"  Bin {bin_idx} [{bin_edges[bin_idx]:.2f}, {bin_edges[-1]:.2f}]: {count} images")
+        
+        # Calculate samples per bin (proportional to bin size)
+        total_samples = len(ava_data)
+        samples_per_bin = {}
+        remaining_samples = n_samples
+        
+        for bin_idx, count in zip(unique_bins, bin_counts):
+            # Proportional allocation
+            proportion = count / total_samples
+            n_bin_samples = int(np.round(proportion * n_samples))
+            # Ensure at least 1 sample per bin if possible
+            n_bin_samples = max(1, min(n_bin_samples, count))
+            samples_per_bin[bin_idx] = min(n_bin_samples, remaining_samples)
+            remaining_samples -= samples_per_bin[bin_idx]
+        
+        # If we still have remaining samples, distribute to largest bins
+        if remaining_samples > 0:
+            sorted_bins = sorted(unique_bins, key=lambda b: bin_counts[list(unique_bins).index(b)], reverse=True)
+            for bin_idx in sorted_bins:
+                if remaining_samples <= 0:
+                    break
+                # Add more samples if bin has capacity
+                bin_count = bin_counts[list(unique_bins).index(bin_idx)]
+                can_add = bin_count - samples_per_bin[bin_idx]
+                add_samples = min(remaining_samples, can_add)
+                samples_per_bin[bin_idx] += add_samples
+                remaining_samples -= add_samples
+        
+        # Sample from each bin
+        sampled_data = []
+        for bin_idx in unique_bins:
+            # Get indices of samples in this bin
+            bin_mask = bin_indices == bin_idx
+            bin_data = [ava_data[i] for i in range(len(ava_data)) if bin_mask[i]]
+            
+            # Sample from this bin
+            n_to_sample = samples_per_bin[bin_idx]
+            if n_to_sample >= len(bin_data):
+                # Take all if we need more than available
+                sampled_data.extend(bin_data)
+            else:
+                # Random sample without replacement
+                sampled_indices = np.random.choice(len(bin_data), size=n_to_sample, replace=False)
+                sampled_data.extend([bin_data[i] for i in sampled_indices])
+        
+        # Shuffle the final sample to avoid any ordering effects
+        np.random.shuffle(sampled_data)
+        
+        self.logger.info(f"Stratified sampling complete: selected {len(sampled_data)} images")
+        self.logger.info(f"Sample score range: [{min(s for _, s in sampled_data):.2f}, {max(s for _, s in sampled_data):.2f}]")
+        self.logger.info(f"Sample mean score: {np.mean([s for _, s in sampled_data]):.2f} (original: {scores.mean():.2f})")
+        
+        return sampled_data
+    
     def load_checkpoint(self, output_dir: str) -> set:
         """
         Load checkpoint to resume processing.
@@ -381,8 +485,24 @@ class PseudolabelGenerator:
         
         # Apply max_images limit if specified
         max_images = self.config['processing'].get('max_images')
-        if max_images is not None:
-            ava_data = ava_data[:max_images]
+        if max_images is not None and max_images < len(ava_data):
+            # Check if stratified sampling is enabled
+            use_stratified = self.config['processing'].get('stratified_sampling', True)
+            
+            if use_stratified:
+                n_bins = self.config['processing'].get('n_stratification_bins', 5)
+                random_seed = self.config['processing'].get('random_seed', 42)
+                self.logger.info(f"Using stratified sampling with {n_bins} bins")
+                ava_data = self.stratified_sample(
+                    ava_data, 
+                    n_samples=max_images,
+                    n_bins=n_bins,
+                    random_seed=random_seed
+                )
+            else:
+                self.logger.info(f"Using sequential sampling (first {max_images} images)")
+                ava_data = ava_data[:max_images]
+            
             self.logger.info(f"Limited to {max_images} images")
         
         # Setup output directory

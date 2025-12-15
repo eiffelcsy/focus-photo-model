@@ -5,6 +5,7 @@ A deep learning model for evaluating photograph aesthetics using the AVA (Aesthe
 ## Features
 
 - **Pseudolabel Generation**: Generate detailed aesthetic attribute scores using Google's Gemma 3 4B vision-language model
+- **Stratified Sampling**: Ensure representative coverage across all quality levels when working with limited budgets
 - **Multi-Criteria Evaluation**: Assess images across 5 key dimensions:
   - Impact (emotional response and memorability)
   - Style (artistic expression and creative vision)
@@ -47,8 +48,11 @@ Then run the pseudolabel generation:
 # Process entire dataset
 python scripts/generate_pseudolabels.py
 
-# Process first 1000 images (for testing)
+# Process first 1000 images with stratified sampling (ensures representative coverage)
 python scripts/generate_pseudolabels.py --max-images 1000
+
+# Use sequential sampling instead of stratified
+python scripts/generate_pseudolabels.py --max-images 1000 --no-stratified
 
 # Use 8-bit quantization for lower memory usage
 python scripts/generate_pseudolabels.py --load-in-8bit
@@ -145,6 +149,30 @@ processing:
   checkpoint_interval: 100  # Save every 100 images
   resume_from_checkpoint: true
   max_images: null  # Set to limit processing
+  
+  # Stratified sampling (when max_images is set)
+  stratified_sampling: true  # Ensures representative sampling across quality levels
+  n_stratification_bins: 5  # Number of quality bins (default: 5)
+  random_seed: 42  # For reproducibility
+```
+
+### Stratified Sampling
+
+When you can't pseudolabel the entire dataset, stratified sampling ensures you get representative coverage across all quality levels. Instead of just taking the first N images (which could be biased), it:
+
+1. **Divides scores into bins** based on percentiles (e.g., low, medium-low, medium, medium-high, high)
+2. **Samples proportionally** from each bin to maintain the original distribution
+3. **Preserves statistical properties** (mean, std, percentiles) of the full dataset
+
+**Example:** If you have 250,000 images but can only pseudolabel 5,000:
+- Without stratification: You get the first 5,000 images (potential bias if dataset is sorted)
+- With stratification: You get ~1,000 images from each quality quintile (representative sample)
+
+**Test the sampling strategy:**
+
+```bash
+# Visualize how stratified sampling compares to the full dataset
+python scripts/test_stratified_sampling.py --n-samples 5000 --n-bins 5 --visualize
 ```
 
 ## Command-Line Options
@@ -152,8 +180,17 @@ processing:
 The `generate_pseudolabels.py` script supports various options:
 
 ```bash
-# Limit number of images
+# Limit number of images with stratified sampling
 python scripts/generate_pseudolabels.py --max-images 500
+
+# Use sequential sampling instead (first N images)
+python scripts/generate_pseudolabels.py --max-images 500 --no-stratified
+
+# Custom stratification bins
+python scripts/generate_pseudolabels.py --max-images 500 --n-bins 10
+
+# Custom random seed for reproducibility
+python scripts/generate_pseudolabels.py --max-images 500 --random-seed 123
 
 # Custom paths
 python scripts/generate_pseudolabels.py \

@@ -105,6 +105,26 @@ def parse_args():
         help="Enable verbose logging"
     )
     
+    parser.add_argument(
+        "--no-stratified",
+        action="store_true",
+        help="Disable stratified sampling (use sequential sampling instead)"
+    )
+    
+    parser.add_argument(
+        "--n-bins",
+        type=int,
+        default=None,
+        help="Number of stratification bins (default: 5, overrides config)"
+    )
+    
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=None,
+        help="Random seed for stratified sampling (default: 42, overrides config)"
+    )
+    
     return parser.parse_args()
 
 
@@ -167,6 +187,18 @@ def main():
     
     if args.verbose:
         config['logging']['verbose'] = True
+    
+    if args.no_stratified:
+        config['processing']['stratified_sampling'] = False
+        print("Using sequential sampling (stratified sampling disabled)")
+    
+    if args.n_bins is not None:
+        config['processing']['n_stratification_bins'] = args.n_bins
+        print(f"Stratification bins: {args.n_bins}")
+    
+    if args.random_seed is not None:
+        config['processing']['random_seed'] = args.random_seed
+        print(f"Random seed: {args.random_seed}")
     
     print()
     print("Initializing pseudolabel generator...")

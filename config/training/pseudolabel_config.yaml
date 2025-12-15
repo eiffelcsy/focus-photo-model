@@ -30,6 +30,11 @@ processing:
   resume_from_checkpoint: true  # Resume from last saved checkpoint
   checkpoint_interval: 100  # Save progress every N images
   
+  # Stratified Sampling Configuration (used when max_images is set)
+  stratified_sampling: true  # Use stratified sampling based on AVA scores
+  n_stratification_bins: 5  # Number of bins for stratification (default: 5)
+  random_seed: 42  # Random seed for reproducibility
+  
 # Prompt Configuration
 prompt:
   system_message: "You are a professional photography critic with expertise in aesthetic evaluation. You can only output valid JSON and nothing else."
