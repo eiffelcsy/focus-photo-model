@@ -3,7 +3,7 @@
 # Model Configuration
 model:
   model_id: "google/gemma-3-4b-it"
-  device_map: "cuda"
+  device_map: "auto"
   dtype: "bfloat16"  # Use bfloat16 for efficiency
   load_in_8bit: false  # Set to true for memory-constrained environments
   load_in_4bit: false

@@ -98,7 +98,14 @@ class PseudolabelGenerator:
         # Load processor
         self.processor = AutoProcessor.from_pretrained(model_id, use_fast=True)
         
-        self.logger.info("Model loaded successfully")
+        # Log device information
+        device = self.model.device
+        self.logger.info(f"Model loaded successfully on device: {device}")
+        self.logger.info(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            self.logger.info(f"CUDA device count: {torch.cuda.device_count()}")
+            self.logger.info(f"Current CUDA device: {torch.cuda.current_device()}")
+            self.logger.info(f"CUDA device name: {torch.cuda.get_device_name(0)}")
     
     def _build_prompt(self, ava_score: float) -> str:
         """
@@ -358,6 +365,17 @@ class PseudolabelGenerator:
     
     def process_dataset(self):
         """Process entire AVA dataset and generate pseudolabels."""
+        # Log device information before starting
+        self.logger.info("=" * 50)
+        self.logger.info("Starting Pseudolabel Generation")
+        self.logger.info(f"Model device: {self.model.device}")
+        self.logger.info(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            self.logger.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        else:
+            self.logger.info("Using CPU (no CUDA available)")
+        self.logger.info("=" * 50)
+        
         # Load dataset
         ava_data = self.load_ava_dataset()
         
