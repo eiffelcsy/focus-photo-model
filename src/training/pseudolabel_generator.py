@@ -96,7 +96,7 @@ class PseudolabelGenerator:
         ).eval()
         
         # Load processor
-        self.processor = AutoProcessor.from_pretrained(model_id)
+        self.processor = AutoProcessor.from_pretrained(model_id, use_fast=True)
         
         self.logger.info("Model loaded successfully")
     
