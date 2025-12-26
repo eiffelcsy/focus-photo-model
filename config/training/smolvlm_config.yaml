@@ -41,9 +41,9 @@ training:
   
   # Optimizer
   optim: "adamw_torch_fused"
-  learning_rate: 1.0e-4
+  learning_rate: 1.0e-2  # Increased for overfitting test
   weight_decay: 0.01
-  warmup_steps: 100
+  warmup_steps: 10  # Reduced for small dataset
   lr_scheduler_type: "cosine"
   
   # Mixed Precision
@@ -89,7 +89,7 @@ dataset:
   random_seed: 42
   
   # Data Processing
-  max_samples: null  # Set to limit dataset size (null for all)
+  max_samples: 100  # Limited for overfitting test
   shuffle: true
 
 # Prompt Configuration
