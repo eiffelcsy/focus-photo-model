@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Fine-tune SmolVLM on aesthetic score prediction using pseudolabels.
 

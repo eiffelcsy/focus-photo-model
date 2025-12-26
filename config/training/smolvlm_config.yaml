@@ -32,7 +32,7 @@ lora:
 
 # Training Configuration
 training:
-  output_dir: "outputs/smolvlm-aesthetic-scorer"
+  output_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/outputs/smolvlm-aesthetic-scorer"
   num_train_epochs: 3
   per_device_train_batch_size: 2
   per_device_eval_batch_size: 2
@@ -52,7 +52,7 @@ training:
   
   # Logging
   logging_steps: 10
-  logging_dir: "outputs/smolvlm-aesthetic-scorer/logs"
+  logging_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/outputs/smolvlm-aesthetic-scorer/logs"
   report_to: "wandb"  # Options: tensorboard, wandb, none
   
   # Checkpointing
@@ -79,8 +79,8 @@ training:
 
 # Dataset Configuration
 dataset:
-  pseudolabels_path: "results/pseudolabels.json"  # Path to pseudolabels JSON
-  images_dir: "src/data/images"  # Directory containing images
+  pseudolabels_path: "/common/home/users/e/eiffelchong.2023/focus-photo-model/results/pseudolabels.json"  # Path to pseudolabels JSON
+  images_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/src/data/images"  # Directory containing images
   
   # Data Splits
   train_split: 0.8

@@ -6,11 +6,8 @@ accelerate
 transformers
 
 # Vision Language Model fine-tuning
-trl>=0.22.0
-peft>=0.17.0
-bitsandbytes>=0.47.0
-flash-attn>=2.0.0
-qwen-vl-utils>=0.0.11
+trl
+peft
 
 # Image processing
 Pillow
