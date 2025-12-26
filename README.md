@@ -5,6 +5,7 @@ A deep learning model for evaluating photograph aesthetics using the AVA (Aesthe
 ## Features
 
 - **Pseudolabel Generation**: Generate detailed aesthetic attribute scores using Google's Gemma 3 4B vision-language model
+- **SmolVLM Fine-tuning**: Fine-tune SmolVLM (2B Vision Language Model) on your pseudolabels using TRL and QLoRA
 - **Stratified Sampling**: Ensure representative coverage across all quality levels when working with limited budgets
 - **Multi-Criteria Evaluation**: Assess images across 5 key dimensions:
   - Impact (emotional response and memorability)
@@ -13,6 +14,8 @@ A deep learning model for evaluating photograph aesthetics using the AVA (Aesthe
   - Lighting (quality and effectiveness)
   - Color Balance (harmony of colors)
 - **Flexible Training**: Support for supervised, self-supervised, and hybrid training approaches
+- **Efficient Training**: QLoRA with 4-bit quantization for consumer GPU training
+- **Production Ready**: Complete inference pipeline for deployed models
 - **Checkpoint Support**: Resume pseudolabel generation from interruptions
 
 ## Installation
@@ -31,7 +34,7 @@ pip install accelerate
 
 ## Quick Start
 
-### 1. Generate Pseudolabels for AVA Dataset
+### 1. Generate Pseudolabels for Your Dataset
 
 First, configure your dataset paths in `config/training/pseudolabel_config.yaml`:
 
@@ -92,6 +95,74 @@ print(result)
 generator.process_dataset()
 ```
 
+### 3. Fine-tune SmolVLM on Your Pseudolabels
+
+Once you have generated pseudolabels, you can fine-tune SmolVLM to predict aesthetic scores:
+
+```bash
+# Basic training with default config
+python scripts/train_smolvlm.py
+
+# Custom training with specific parameters
+python scripts/train_smolvlm.py \
+  --pseudolabels-path results/pseudolabels.json \
+  --images-dir src/data/images \
+  --output-dir outputs/my-aesthetic-model \
+  --epochs 3 \
+  --batch-size 2
+
+# Training with Weights & Biases logging
+python scripts/train_smolvlm.py \
+  --use-wandb \
+  --wandb-project "aesthetic-scorer"
+```
+
+### 4. Run Inference with Your Fine-tuned Model
+
+Use your trained model to score new images:
+
+```bash
+# Single image
+python scripts/inference_smolvlm.py \
+  --image path/to/image.jpg \
+  --adapter outputs/smolvlm-aesthetic-scorer \
+  --pretty-print
+
+# Batch processing
+python scripts/inference_smolvlm.py \
+  --image-dir path/to/images \
+  --adapter outputs/smolvlm-aesthetic-scorer \
+  --output results.json
+```
+
+**Programmatic Usage:**
+
+```python
+from src.training.smolvlm_trainer import load_trained_model
+from scripts.inference_smolvlm import generate_scores_from_image
+
+# Load model
+model, processor = load_trained_model(
+    base_model_id="HuggingFaceTB/SmolVLM-Instruct",
+    adapter_path="outputs/smolvlm-aesthetic-scorer"
+)
+
+# Generate scores
+result = generate_scores_from_image(
+    model=model,
+    processor=processor,
+    image_path="path/to/image.jpg",
+    system_message="You are an expert photography critic...",
+    user_message="Analyze this photograph and provide aesthetic scores."
+)
+
+print(f"Impact: {result['impact']}")
+print(f"Style: {result['style']}")
+print(f"Composition: {result['composition']}")
+print(f"Lighting: {result['lighting']}")
+print(f"Color Balance: {result['color_balance']}")
+```
+
 ## Project Structure
 
 ```
@@ -101,15 +172,20 @@ focus-photo-model/
 │   │   └── dataset_config.yaml       # Dataset configuration
 │   └── training/
 │       ├── pseudolabel_config.yaml   # Pseudolabel generation config
+│       ├── smolvlm_config.yaml       # SmolVLM fine-tuning config
 │       └── train_config.yaml         # Training configuration
 ├── scripts/
 │   ├── generate_pseudolabels.py      # Generate pseudolabels script
+│   ├── train_smolvlm.py              # SmolVLM fine-tuning script
+│   ├── inference_smolvlm.py          # SmolVLM inference script
 │   ├── train_supervised.py           # Supervised training
 │   ├── train_self_supervised.py      # Self-supervised training
 │   └── train_hybrid.py               # Hybrid training
 ├── src/
 │   ├── training/
 │   │   ├── pseudolabel_generator.py  # Pseudolabel generation module
+│   │   ├── smolvlm_trainer.py        # SmolVLM trainer with QLoRA
+│   │   ├── smolvlm_dataset.py        # Dataset loader for SmolVLM
 │   │   ├── supervised_trainer.py     # Supervised trainer
 │   │   ├── self_supervised_trainer.py # Self-supervised trainer
 │   │   └── hybrid_trainer.py         # Hybrid trainer
@@ -118,8 +194,52 @@ focus-photo-model/
 │   │   └── metrics.py                # Evaluation metrics
 │   └── utils/
 │       └── logging.py                # Logging utilities
+├── docs/
+│   └── SMOLVLM_FINETUNING.md         # Complete SmolVLM guide
+├── examples/
+│   ├── smolvlm_quickstart.py         # Quick start example
+│   └── smolvlm_inference_example.py  # Inference example
 └── requirements.txt                  # Python dependencies
 ```
+
+## SmolVLM Fine-tuning
+
+For detailed information about fine-tuning SmolVLM on your pseudolabels, see the **[Complete SmolVLM Fine-tuning Guide](docs/SMOLVLM_FINETUNING.md)**.
+
+### Quick Overview
+
+SmolVLM is a 2B parameter Vision Language Model that can be efficiently fine-tuned on consumer GPUs using QLoRA:
+
+- **Memory Efficient**: Trains on 12GB+ VRAM GPUs (RTX 3060, 4060 Ti, L4)
+- **Fast Training**: Uses Flash Attention 2 and 4-bit quantization
+- **Production Ready**: Complete inference pipeline included
+- **Easy to Use**: Simple configuration via YAML
+
+**Training Example:**
+
+```bash
+python scripts/train_smolvlm.py \
+  --pseudolabels-path results/pseudolabels.json \
+  --images-dir src/data/images \
+  --epochs 3 \
+  --use-wandb
+```
+
+**Inference Example:**
+
+```bash
+python scripts/inference_smolvlm.py \
+  --image photo.jpg \
+  --adapter outputs/smolvlm-aesthetic-scorer \
+  --pretty-print
+```
+
+See the [full documentation](docs/SMOLVLM_FINETUNING.md) for:
+- Installation and setup
+- Configuration options
+- Training best practices
+- Troubleshooting guide
+- Advanced usage examples
 
 ## Configuration
 

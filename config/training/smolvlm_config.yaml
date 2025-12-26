@@ -1,0 +1,135 @@
+# SmolVLM Fine-tuning Configuration
+
+# Model Configuration
+model:
+  model_id: "HuggingFaceTB/SmolVLM-Instruct"
+  device_map: "auto"
+  torch_dtype: "bfloat16"
+  attn_implementation: "flash_attention_2"  # Use flash attention for efficiency
+  
+  # Quantization Configuration (for QLoRA)
+  quantization:
+    load_in_4bit: true
+    bnb_4bit_use_double_quant: true
+    bnb_4bit_quant_type: "nf4"
+    bnb_4bit_compute_dtype: "bfloat16"
+
+# LoRA Configuration
+lora:
+  r: 8  # LoRA rank
+  lora_alpha: 8
+  lora_dropout: 0.1
+  target_modules:
+    - "down_proj"
+    - "o_proj"
+    - "k_proj"
+    - "q_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "v_proj"
+  use_dora: true  # Use DoRA (Weight-Decomposed Low-Rank Adaptation)
+  init_lora_weights: "gaussian"
+
+# Training Configuration
+training:
+  output_dir: "outputs/smolvlm-aesthetic-scorer"
+  num_train_epochs: 3
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  
+  # Optimizer
+  optim: "adamw_torch_fused"
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 100
+  lr_scheduler_type: "cosine"
+  
+  # Mixed Precision
+  bf16: true
+  fp16: false
+  
+  # Logging
+  logging_steps: 10
+  logging_dir: "outputs/smolvlm-aesthetic-scorer/logs"
+  report_to: "tensorboard"  # Options: tensorboard, wandb, none
+  
+  # Checkpointing
+  save_strategy: "steps"
+  save_steps: 100
+  save_total_limit: 3
+  load_best_model_at_end: true
+  metric_for_best_model: "eval_loss"
+  
+  # Evaluation
+  eval_strategy: "steps"
+  eval_steps: 100
+  
+  # Other
+  max_length: null  # Let the model decide
+  remove_unused_columns: false
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+  
+  # Push to Hub (optional)
+  push_to_hub: false
+  hub_model_id: null  # Set if push_to_hub is true
+  hub_strategy: "every_save"
+
+# Dataset Configuration
+dataset:
+  pseudolabels_path: "results/pseudolabels.json"  # Path to pseudolabels JSON
+  images_dir: "src/data/images"  # Directory containing images
+  
+  # Data Splits
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  random_seed: 42
+  
+  # Data Processing
+  max_samples: null  # Set to limit dataset size (null for all)
+  shuffle: true
+
+# Prompt Configuration
+prompt:
+  system_message: |
+    You are an expert photography critic specializing in aesthetic evaluation.
+    Analyze the provided photograph and rate it on 5 key aesthetic criteria.
+    Each criterion should be scored on a scale from 1.0 to 10.0.
+    
+    The 5 criteria are:
+    1. IMPACT: Emotional response and memorability upon first viewing
+    2. STYLE: Artistic expression and creative vision
+    3. COMPOSITION: Visual arrangement and balance of elements
+    4. LIGHTING: Quality and effectiveness of illumination
+    5. COLOR BALANCE: Harmony and effectiveness of color relationships
+    
+    Provide your assessment in the following JSON format:
+    {
+      "impact": <score>,
+      "style": <score>,
+      "composition": <score>,
+      "lighting": <score>,
+      "color_balance": <score>,
+      "reasoning": "<brief explanation>"
+    }
+  
+  user_message: "Analyze this photograph and provide aesthetic scores for the 5 criteria."
+  
+  # Output format for training
+  response_format: "json"  # json or text
+
+# Generation Parameters (for inference)
+generation:
+  max_new_tokens: 512
+  do_sample: false
+  temperature: 0.1
+  top_p: 0.95
+
+# Logging
+logging:
+  verbose: true
+  log_level: "INFO"
+
