@@ -5,7 +5,7 @@ model:
   model_id: "HuggingFaceTB/SmolVLM-Instruct"
   device_map: "auto"
   torch_dtype: "bfloat16"
-  attn_implementation: "flash_attention_2"  # Use flash attention for efficiency
+  attn_implementation: "sdpa"  # Options: "flash_attention_2", "eager", "sdpa"
   
   # Quantization Configuration (for QLoRA)
   quantization:
@@ -53,7 +53,7 @@ training:
   # Logging
   logging_steps: 10
   logging_dir: "outputs/smolvlm-aesthetic-scorer/logs"
-  report_to: "tensorboard"  # Options: tensorboard, wandb, none
+  report_to: "wandb"  # Options: tensorboard, wandb, none
   
   # Checkpointing
   save_strategy: "steps"
