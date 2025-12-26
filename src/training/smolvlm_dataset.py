@@ -102,13 +102,14 @@ class AestheticScoreDataset(Dataset):
             image = Image.new('RGB', (224, 224), color='white')
         
         # Format the assistant response as JSON
+        # Note: Only include scores for training, not reasoning
+        # This focuses the model on learning accurate score prediction
         assistant_response = {
             "impact": sample['impact'],
             "style": sample['style'],
             "composition": sample['composition'],
             "lighting": sample['lighting'],
-            "color_balance": sample['color_balance'],
-            "reasoning": sample['reasoning']
+            "color_balance": sample['color_balance']
         }
         
         # Format in chat template structure

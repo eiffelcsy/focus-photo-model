@@ -34,8 +34,8 @@ lora:
 training:
   output_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/outputs/smolvlm-aesthetic-scorer"
   num_train_epochs: 3
-  per_device_train_batch_size: 2
-  per_device_eval_batch_size: 2
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
   gradient_accumulation_steps: 8
   gradient_checkpointing: true
   
@@ -51,7 +51,7 @@ training:
   fp16: false
   
   # Logging
-  logging_steps: 10
+  logging_steps: 1
   logging_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/outputs/smolvlm-aesthetic-scorer/logs"
   report_to: "wandb"  # Options: tensorboard, wandb, none
   
@@ -96,6 +96,7 @@ dataset:
 prompt:
   system_message: |
     You are an expert photography critic specializing in aesthetic evaluation.
+    You can only output valid JSON and nothing else.
     Analyze the provided photograph and rate it on 5 key aesthetic criteria.
     Each criterion should be scored on a scale from 1.0 to 10.0.
     
@@ -112,8 +113,7 @@ prompt:
       "style": <score>,
       "composition": <score>,
       "lighting": <score>,
-      "color_balance": <score>,
-      "reasoning": "<brief explanation>"
+      "color_balance": <score>
     }
   
   user_message: "Analyze this photograph and provide aesthetic scores for the 5 criteria."
