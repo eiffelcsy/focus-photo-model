@@ -34,14 +34,14 @@ lora:
 training:
   output_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/outputs/smolvlm-aesthetic-scorer"
   num_train_epochs: 3
-  per_device_train_batch_size: 2
-  per_device_eval_batch_size: 2
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
   gradient_accumulation_steps: 8
   gradient_checkpointing: true
   
   # Optimizer
   optim: "adamw_torch_fused"
-  learning_rate: 1.0e-2  # Increased for overfitting test
+  learning_rate: 1.0e-4
   weight_decay: 0.01
   warmup_steps: 10  # Reduced for small dataset
   lr_scheduler_type: "cosine"
@@ -51,7 +51,7 @@ training:
   fp16: false
   
   # Logging
-  logging_steps: 1
+  logging_steps: 10
   logging_dir: "/common/home/users/e/eiffelchong.2023/focus-photo-model/outputs/smolvlm-aesthetic-scorer/logs"
   report_to: "wandb"  # Options: tensorboard, wandb, none
   
@@ -89,7 +89,7 @@ dataset:
   random_seed: 42
   
   # Data Processing
-  max_samples: 100  # Limited for overfitting test
+  max_samples: null  # Set to limit dataset size (null for all)
   shuffle: true
 
 # Prompt Configuration
