@@ -371,7 +371,7 @@ def load_trained_model(
         base_model_id,
         device_map=device_map,
         torch_dtype=dtype,
-        _attn_implementation="flash_attention_2",
+        _attn_implementation="sdpa",
     )
     
     # Load processor
